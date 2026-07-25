@@ -436,17 +436,24 @@ class VerifyTonProof(_BaseVerify[TonProofPayloadDto]):
         return bytes(msg)
 
 
+# Payload layout: 8-byte nonce + 8-byte big-endian expiry + 16-byte truncated HMAC-SHA256.
+_PAYLOAD_NONCE_SIZE = 8
+_PAYLOAD_BODY_SIZE = _PAYLOAD_NONCE_SIZE + 8
+_PAYLOAD_SIG_SIZE = 16
+_PAYLOAD_SIZE = _PAYLOAD_BODY_SIZE + _PAYLOAD_SIG_SIZE
+
+
 def create_ton_proof_payload(secret_key: str, ttl: int = 15 * 60) -> str:
     """Create backend-generated challenge payload for TON Proof.
 
     :param secret_key: Backend secret key for HMAC.
     :param ttl: Validity period in seconds.
-    :return: Hex-encoded payload.
+    :return: Hex-encoded payload (64 chars).
     """
     exp = int(time.time()) + int(ttl)
-    payload = secrets.token_bytes(32) + exp.to_bytes(8, "big")
-    sig = hmac.new(secret_key.encode(), payload, hashlib.sha256).digest()
-    return (payload + sig).hex()
+    body = secrets.token_bytes(_PAYLOAD_NONCE_SIZE) + exp.to_bytes(8, "big")
+    sig = hmac.new(secret_key.encode(), body, hashlib.sha256).digest()
+    return (body + sig[:_PAYLOAD_SIG_SIZE]).hex()
 
 
 def verify_ton_proof_payload(secret_key: str, ton_proof_payload: str) -> bool:
@@ -462,15 +469,15 @@ def verify_ton_proof_payload(secret_key: str, ton_proof_payload: str) -> bool:
     except Exception as e:
         raise BadSignatureError("Invalid payload encoding") from e
 
-    if len(raw) != 72:
+    if len(raw) != _PAYLOAD_SIZE:
         raise BadSignatureError("Invalid payload length")
 
-    payload, sig = raw[:40], raw[40:]
-    expected = hmac.new(secret_key.encode(), payload, hashlib.sha256).digest()
-    if not hmac.compare_digest(sig, expected):
+    body, sig = raw[:_PAYLOAD_BODY_SIZE], raw[_PAYLOAD_BODY_SIZE:]
+    expected = hmac.new(secret_key.encode(), body, hashlib.sha256).digest()
+    if not hmac.compare_digest(sig, expected[:_PAYLOAD_SIG_SIZE]):
         raise BadSignatureError("Payload signature mismatch")
 
-    exp = int.from_bytes(payload[32:40], "big")
-    if int(time.time()) > exp + 60:
+    exp = int.from_bytes(body[_PAYLOAD_NONCE_SIZE:], "big")
+    if int(time.time()) > exp:
         raise BadSignatureError("Payload expired")
     return True

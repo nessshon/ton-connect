@@ -1,3 +1,7 @@
+from ._types import (
+    TonAddressFormat,
+    set_address_format,
+)
 from .account import Account
 from .app import (
     AppWallet,
@@ -143,6 +147,7 @@ __all__ = [
     "SignDataResult",
     "SignDataRpcRequest",
     "SignDataRpcResponseSuccess",
+    "TonAddressFormat",
     "TonAddressItem",
     "TonAddressItemReply",
     "TonProofData",
@@ -156,4 +161,5 @@ __all__ = [
     "WalletResponse",
     "WalletResponseError",
     "WalletResponseSuccess",
+    "set_address_format",
 ]

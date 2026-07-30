@@ -1,3 +1,7 @@
+from .models import (
+    TonAddressFormat,
+    set_address_format,
+)
 from .connector import Connector, Event
 from .storage import (
     FileStorage,
@@ -20,9 +24,11 @@ __all__ = [
     "FileStorage",
     "MemoryStorage",
     "StorageProtocol",
+    "TonAddressFormat",
     "TonConnect",
     "VerifySignData",
     "VerifyTonProof",
     "create_ton_proof_payload",
+    "set_address_format",
     "verify_ton_proof_payload",
 ]

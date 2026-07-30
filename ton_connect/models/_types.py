@@ -1,4 +1,5 @@
 import typing as t
+from enum import Enum
 
 from pydantic import (
     BaseModel as _BaseModel,
@@ -24,13 +25,56 @@ __all__ = [
     "OptionalTonPublicKey",
     "OptionalWalletStateInit",
     "TonAddress",
+    "TonAddressFormat",
     "TonPublicKey",
     "WalletStateInit",
+    "set_address_format",
 ]
 
 
 T = t.TypeVar("T")
 R = t.TypeVar("R")
+
+
+class TonAddressFormat(str, Enum):
+    """Controls the serialization format for TON addresses.
+
+    - ``USER_FRIENDLY``: User-friendly bounceable format (e.g. ``EQCD39VS5...``).
+      This is the default format used by most wallets.
+    - ``RAW``: Raw non-bounceable format (e.g. ``0:83dfd552e4...``).
+      Required by some wallets like Tonkeeper for the ``from`` field
+      in ``sendTransaction`` payload.
+    """
+
+    USER_FRIENDLY = "user_friendly"
+    RAW = "raw"
+
+
+_address_format: TonAddressFormat = TonAddressFormat.USER_FRIENDLY
+
+
+def set_address_format(fmt: TonAddressFormat) -> None:
+    """Set the global address serialization format.
+
+    All ``TonAddress`` and ``OptionalTonAddress`` fields will use this format
+    for serialization until changed.
+
+    :param fmt: The address format to use.
+
+    Usage::
+
+        from ton_connect.models import set_address_format, TonAddressFormat
+
+        set_address_format(TonAddressFormat.RAW)
+    """
+    global _address_format
+    _address_format = TonAddressFormat(fmt)
+
+
+def _s_address(v: Address) -> str:
+    if _address_format == TonAddressFormat.RAW:
+        return v.to_str(is_user_friendly=False)
+    return v.to_str(is_user_friendly=True, is_bounceable=False)
 
 
 class BaseModel(_BaseModel):
@@ -110,10 +154,6 @@ def _as_cell(v: t.Any) -> Cell:
 
 def _as_binary64(v: t.Any) -> Binary:
     return v if isinstance(v, Binary) else Binary(v, size=64)
-
-
-def _s_address(v: Address) -> str:
-    return v.to_str(is_user_friendly=True, is_bounceable=False)
 
 
 def _s_chain(v: NetworkGlobalID) -> str:

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 import typing as t
 from contextlib import suppress
@@ -66,6 +67,8 @@ _SignDataResult = tuple[
     TonConnectError | None,
 ]
 _RequestResult = _SendTransactionResult | _SignDataResult
+
+logger = logging.getLogger(__name__)
 
 
 class Event(str, Enum):
@@ -502,6 +505,8 @@ class Connector:
                 if not isinstance(error, TonConnectError):
                     error = TonConnectError(str(error))
                 await self._dispatch(Event.ERROR, error)
+            else:
+                logger.exception("Event.ERROR handler failed")
 
     async def _send_request(
         self,

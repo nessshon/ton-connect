@@ -20,8 +20,8 @@ async def main() -> None:
     storage = FileStorage(STORAGE_PATH)
 
     # Load wallet descriptors from the TON wallets registry
-    # include_wallets: restrict to specific wallets — reduces bridge connections opened
-    app_wallets_loader = AppWalletsLoader(include_wallets=["tonkeeper"])
+    # include_wallets=[...] would restrict the catalogue and the bridge connections opened
+    app_wallets_loader = AppWalletsLoader()
 
     # Initialize the TonConnect manager
     # manifest_url: publicly accessible URL to your tonconnect-manifest.json
@@ -60,12 +60,10 @@ async def main() -> None:
         # Standard tc:// link — works with any TonConnect-compatible wallet
         print(f"Connect URL: {standard_url}")
 
-        # Wallet-specific universal link — opens directly in the target wallet app
+        # Wallet-specific universal links — each opens directly in its wallet app
         # Uses app_wallet.universal_url as the base instead of tc://
-        # Bridge connection sources are not affected by this parameter
-        tonkeeper = app_wallets_loader.get_wallet("tonkeeper")
-        tonkeeper_url = connector.make_connect_url(request, tonkeeper)
-        print(f"Tonkeeper URL: {tonkeeper_url}")
+        for app_wallet in app_wallets_loader.get_wallets():
+            print(f"{app_wallet.name}: {connector.make_connect_url(request, app_wallet)}")
 
         # Block until the wallet responds (approve or reject)
         # Returns (wallet, None) on success, (None, error) on failure or timeout

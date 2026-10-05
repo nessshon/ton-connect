@@ -28,9 +28,11 @@ from .models import (
     SendTransactionPayload,
     SendTransactionResult,
     SendTransactionRpcRequest,
+    SendTransactionRpcResponseSuccess,
     SignDataPayload,
     SignDataResult,
     SignDataRpcRequest,
+    SignDataRpcResponseSuccess,
     TonAddressItem,
     TonProofItem,
     Wallet,
@@ -79,6 +81,12 @@ class Event(str, Enum):
     """Raw wallet message before processing."""
     ERROR = "error"
     """Provider/bridge-level or unhandled handler error."""
+
+
+_RESPONSE_TYPES: dict[Event | None, type[WalletResponseSuccess]] = {
+    Event.TRANSACTION: SendTransactionRpcResponseSuccess,
+    Event.SIGN_DATA: SignDataRpcResponseSuccess,
+}
 
 
 class Connector:
@@ -639,7 +647,13 @@ class Connector:
 
     async def _handle_response_success(self, message: WalletResponseSuccess) -> None:
         """Process a successful RPC response."""
-        await self._emit_request(int(message.id), message.result, None)
+        request_id = int(message.id)
+        expected = _RESPONSE_TYPES.get(self._request_events.get(request_id))
+        if expected is not None and not isinstance(message, expected):
+            error = TonConnectError(f"Unexpected wallet response {type(message).__name__} to request {request_id}")
+            await self._emit_request(request_id, None, error)
+            return
+        await self._emit_request(request_id, message.result, None)
 
     async def _handle_response_error(self, message: WalletResponseError) -> None:
         """Process a failed RPC response."""

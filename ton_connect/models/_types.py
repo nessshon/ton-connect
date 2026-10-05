@@ -1,3 +1,4 @@
+import base64
 import typing as t
 
 from pydantic import (
@@ -90,7 +91,12 @@ def _ser_opt(ser: t.Callable[[T], R]) -> t.Callable[[T | None], R | None]:
 
 
 def _as_address(v: t.Any) -> Address:
-    return v if isinstance(v, Address) else Address(v)
+    if isinstance(v, Address):
+        return v
+    try:
+        return Address(v)
+    except Exception as e:
+        raise ValueError(str(e)) from e
 
 
 def _as_network(v: t.Any) -> NetworkGlobalID:
@@ -104,14 +110,24 @@ def _as_public_key(v: t.Any) -> PublicKey:
 def _as_state_init(v: t.Any) -> StateInit:
     if isinstance(v, StateInit):
         return v
-    return StateInit.deserialize(to_cell(v).begin_parse())
+    try:
+        return StateInit.deserialize(to_cell(v).begin_parse())
+    except Exception as e:
+        raise ValueError(str(e)) from e
 
 
 def _as_cell(v: t.Any) -> Cell:
-    return v if isinstance(v, Cell) else to_cell(v)
+    if isinstance(v, Cell):
+        return v
+    try:
+        return to_cell(v)
+    except Exception as e:
+        raise ValueError(str(e)) from e
 
 
 def _as_binary64(v: t.Any) -> Binary:
+    if isinstance(v, str) and len(v) == 88:
+        v = base64.b64decode(v, validate=True)
     return v if isinstance(v, Binary) else Binary(v, size=64)
 
 

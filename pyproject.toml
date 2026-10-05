@@ -14,7 +14,7 @@ maintainers = [
 ]
 dependencies = [
     "aiohttp>=3.7.0",
-    "pydantic>=2.0,<3.0",
+    "pydantic>=2.6,<3.0",
     "PyNaCl>=1.5.0",
     "ton-core>=0.5.0",
 ]

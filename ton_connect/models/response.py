@@ -210,9 +210,9 @@ class SignDataRpcResponseSuccess(RpcResponseSuccessBase):
 
 
 WalletResponseSuccess: t.TypeAlias = (
-    DisconnectRpcResponseSuccess | SendTransactionRpcResponseSuccess | SignDataRpcResponseSuccess
+    SendTransactionRpcResponseSuccess | SignDataRpcResponseSuccess | DisconnectRpcResponseSuccess
 )
 
-WalletResponse: t.TypeAlias = WalletResponseSuccess | WalletResponseError
+WalletResponse: t.TypeAlias = WalletResponseError | WalletResponseSuccess
 
 WalletMessage: t.TypeAlias = WalletEvent | WalletResponse

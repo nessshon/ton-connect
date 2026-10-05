@@ -1,6 +1,9 @@
 import asyncio
 import json
+import os
+import tempfile
 import typing as t
+from contextlib import suppress
 from pathlib import Path
 
 from .protocol import StorageProtocol
@@ -15,13 +18,20 @@ class FileStorage(StorageProtocol):
         self._lock = asyncio.Lock()
 
     async def _read(self) -> dict[str, t.Any]:
-        """Read the storage file, returning empty dict if missing."""
+        """Read the storage file, returning empty dict if missing or empty."""
         if not self._path.exists():
             return {}
 
         def _load() -> dict[str, t.Any]:
-            with self._path.open("r", encoding="utf-8") as f:
-                return t.cast("dict[str, t.Any]", json.load(f))
+            text = self._path.read_text(encoding="utf-8")
+            if not text.strip():
+                return {}
+            try:
+                return t.cast("dict[str, t.Any]", json.loads(text))
+            except json.JSONDecodeError as e:
+                raise json.JSONDecodeError(
+                    f"{self._path} is not valid JSON, fix or delete it: {e.msg}", e.doc, e.pos
+                ) from None
 
         return await asyncio.to_thread(_load)
 
@@ -29,9 +39,36 @@ class FileStorage(StorageProtocol):
         """Write data to the storage file, creating parents as needed."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
-        def _dump() -> None:
+        def _dump_in_place() -> None:
             with self._path.open("w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
+
+        def _dump() -> None:
+            target = self._path.resolve()
+            try:
+                fd, name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+            except OSError:
+                _dump_in_place()
+                return
+            try:
+                with open(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                if target.exists():
+                    st = target.stat()
+                    os.chmod(name, st.st_mode)
+                    with suppress(OSError):
+                        os.chown(name, st.st_uid, st.st_gid)
+                try:
+                    os.replace(name, target)
+                    return
+                except OSError:
+                    pass
+            finally:
+                with suppress(FileNotFoundError):
+                    os.unlink(name)
+            _dump_in_place()
 
         await asyncio.to_thread(_dump)
 

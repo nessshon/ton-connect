@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 import typing as t
 from contextlib import suppress
@@ -12,6 +13,8 @@ from ..models.connection import (
     PendingConnection,
 )
 from ..storage import StorageProtocol
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderStorage:
@@ -38,12 +41,14 @@ class ProviderStorage:
 
         try:
             conn = self._connection_adapter.validate_python(raw)
-        except ValidationError:
-            await self.remove_connection()
+        except ValidationError as e:
+            errors = [(err["loc"], err["type"]) for err in e.errors()]
+            logger.warning("Dropping unreadable stored connection %s: %s", self._key, errors)
+            await self._storage.remove_item(self._key)
             return None
 
         if isinstance(conn, PendingConnection) and conn.is_expired():
-            await self.remove_connection()
+            await self._storage.remove_item(self._key)
             return None
 
         return conn
@@ -61,7 +66,8 @@ class ProviderStorage:
 
     async def remove_connection(self) -> None:
         """Remove the stored connection."""
-        await self._storage.remove_item(self._key)
+        async with self._lock:
+            await self._storage.remove_item(self._key)
 
     async def get_connection(self) -> Connection:
         """Load the stored connection.

@@ -102,7 +102,7 @@ class Provider:
     async def request(self, request: RpcRequestBase) -> int:
         """Encrypt and send an RPC request to the wallet.
 
-        :param request: RPC request to send.
+        :param request: RPC request to send; a preset ``id`` is kept.
         :return: Assigned request ID.
         :raises TonConnectError: If no active connection or gateway.
         """
@@ -114,8 +114,8 @@ class Provider:
         if gw is None:
             raise TonConnectError("Bridge gateway is not initialized")
 
-        request_id = await self._storage.get_next_rpc_request_id()
-        request.id = str(request_id)
+        if request.id is None:
+            request.id = str(await self._storage.take_next_rpc_request_id())
 
         message = conn.session.session_keypair.encrypt(
             message=request.to_bytes(),
@@ -129,9 +129,7 @@ class Provider:
             attempts=self.SEND_ATTEMPTS,
             delay=self.SEND_DELAY,
         )
-
-        await self._storage.increase_next_rpc_request_id()
-        return request_id
+        return int(request.id)
 
     async def disconnect(self) -> None:
         """Send a disconnect RPC (best-effort) and tear down the connection."""

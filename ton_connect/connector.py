@@ -9,6 +9,7 @@ from .exceptions import (
     RequestTimeoutError,
     TonConnectError,
     TonConnectErrors,
+    UnknownAppError,
     WalletAlreadyConnectedError,
     WalletNotConnectedError,
 )
@@ -94,6 +95,7 @@ class Connector:
 
     DEFAULT_CONNECT_TIMEOUT: float = 15 * 60
     DEFAULT_REQUEST_TIMEOUT: float = 5 * 60
+    VALID_UNTIL_GRACE: float = 30
 
     def __init__(
         self,
@@ -295,8 +297,9 @@ class Connector:
         """Request the wallet to sign and send a transaction.
 
         :param payload: Transaction payload.
-        :param timeout: Request timeout in seconds, or ``None``.
+        :param timeout: Request timeout in seconds; ``None`` waits until ``valid_until`` plus ``VALID_UNTIL_GRACE``.
         :return: Request ID for ``wait_transaction``.
+        :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
         """
         has_extra = any(m.extra_currency is not None for m in payload.messages)
 
@@ -312,9 +315,11 @@ class Connector:
             payload = payload.model_copy(update={"network": self._network})
         if self.account is not None and payload.from_address is None:
             payload = payload.model_copy(update={"from_address": self.account.address})
+        if self._wallet is not None and payload.network is not None:
+            verify_wallet_network(self._wallet, payload.network)
 
         if timeout is None and payload.valid_until is not None:
-            timeout = max(payload.valid_until - int(time.time()), 0)
+            timeout = max(payload.valid_until - int(time.time()), 0) + self.VALID_UNTIL_GRACE
         if timeout is None:
             timeout = self.DEFAULT_REQUEST_TIMEOUT  # type: ignore[unreachable]
 
@@ -334,6 +339,7 @@ class Connector:
         :param payload: Sign data payload.
         :param timeout: Request timeout in seconds, or ``None``.
         :return: Request ID for ``wait_sign_data``.
+        :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
         """
         if self._wallet is not None:
             verify_sign_data_support(
@@ -346,6 +352,8 @@ class Connector:
             payload = payload.model_copy(update={"network": self._network})
         if self.account is not None and payload.from_address is None:
             payload = payload.model_copy(update={"from_address": self.account.address})
+        if self._wallet is not None and payload.network is not None:
+            verify_wallet_network(self._wallet, payload.network)
 
         return await self._send_request(
             SignDataRpcRequest(params=[payload]),
@@ -371,6 +379,7 @@ class Connector:
 
         :param request_id: Request ID from ``send_transaction``.
         :return: `(result, None)` on success, `(None, error)` on failure.
+            A reply that arrived before this call is kept until the request timeout.
         :raises TonConnectError: If request ID is unknown or not a transaction.
         """
         event = self._request_events.get(request_id)
@@ -383,6 +392,7 @@ class Connector:
 
         :param request_id: Request ID from ``sign_data``.
         :return: `(result, None)` on success, `(None, error)` on failure.
+            A reply that arrived before this call is kept until the request timeout.
         :raises TonConnectError: If request ID is unknown or not sign_data.
         """
         event = self._request_events.get(request_id)
@@ -438,11 +448,9 @@ class Connector:
         future = self._request_futures.get(request_id)
         if future is None:
             raise TonConnectError(f"Unknown request id: {request_id}")
-        try:
-            return await future
-        finally:
-            if request_id in self._request_futures:
-                del self._request_futures[request_id]
+        result = await asyncio.shield(future)
+        self.drop_request(request_id)
+        return result
 
     async def _emit_connect(self, error: TonConnectError | None) -> None:
         """Resolve the connect future and dispatch the event."""
@@ -457,14 +465,12 @@ class Connector:
         result: t.Any,
         error: TonConnectError | None,
     ) -> None:
-        """Resolve a request future and dispatch the event."""
-        self._cancel_request_timeout(request_id)
-        event = self._request_events.pop(request_id, None)
-        future = self._request_futures.pop(request_id, None)
-        if future is not None and not future.done():
-            future.set_result((result, error))
-        if event is not None:
-            await self._dispatch(event, request_id, result, error)
+        """Resolve a request future once and dispatch the event; the result stays until collected or expired."""
+        future = self._request_futures.get(request_id)
+        if future is None or future.done():
+            return
+        future.set_result((result, error))
+        await self._dispatch(self._request_events[request_id], request_id, result, error)
 
     async def _dispatch(self, event: Event, *args: t.Any) -> None:
         """Dispatch an event to its registered handler."""
@@ -489,11 +495,15 @@ class Connector:
         if not self.connected:
             raise WalletNotConnectedError()
 
-        request_id = await self._provider.request(request)
-        loop = asyncio.get_running_loop()
-
-        self._request_futures[request_id] = loop.create_future()
+        request_id = await self._storage.take_next_rpc_request_id()
+        request.id = str(request_id)
+        self._request_futures[request_id] = asyncio.get_running_loop().create_future()
         self._request_events[request_id] = event
+        try:
+            await self._provider.request(request)
+        except BaseException:
+            self.drop_request(request_id)
+            raise
 
         if timeout is not None:
             self._request_timeout_tasks[request_id] = asyncio.create_task(
@@ -518,9 +528,9 @@ class Connector:
             await asyncio.sleep(timeout)
         except asyncio.CancelledError:
             return
-        if request_id in self._request_timeout_tasks:
-            del self._request_timeout_tasks[request_id]
+        self._request_timeout_tasks.pop(request_id, None)
         await self._emit_request(request_id, None, RequestTimeoutError())
+        self.drop_request(request_id)
 
     def _cancel_connect_timeout(self) -> None:
         """Cancel the connect timeout task."""
@@ -543,14 +553,8 @@ class Connector:
 
     def _cancel_all_requests(self) -> None:
         """Cancel all pending request futures and timeouts."""
-        for future in self._request_futures.values():
-            if not future.done():
-                future.cancel()
-        self._request_futures.clear()
-        for task in self._request_timeout_tasks.values():
-            task.cancel()
-        self._request_timeout_tasks.clear()
-        self._request_events.clear()
+        for request_id in list(self._request_futures):
+            self.drop_request(request_id)
 
     def resume_connect(self, timeout: float) -> None:
         """Resume waiting for a pending connect after restart.
@@ -571,9 +575,10 @@ class Connector:
         :param event: Event type (``Event.TRANSACTION`` or ``Event.SIGN_DATA``).
         :param timeout: Remaining timeout in seconds.
         """
-        loop = asyncio.get_running_loop()
-        self._request_futures[request_id] = loop.create_future()
-        self._request_events[request_id] = event
+        self._cancel_request_timeout(request_id)
+        if request_id not in self._request_futures:
+            self._request_futures[request_id] = asyncio.get_running_loop().create_future()
+            self._request_events[request_id] = event
         self._request_timeout_tasks[request_id] = asyncio.create_task(
             self._run_request_timeout(request_id, timeout),
         )
@@ -630,12 +635,16 @@ class Connector:
 
     async def _handle_disconnect_success(self, _: DisconnectEventSuccess) -> None:
         """Process a successful disconnect event."""
+        await self._drop_session(None)
+
+    async def _drop_session(self, error: TonConnectError | None) -> None:
+        """Forget the wallet session and dispatch the disconnect event."""
         self._wallet = None
         self._cancel_all_requests()
         await self._storage.remove_connection()
         await self._provider.close_connection()
         self._cancel_connect_timeout()
-        await self._dispatch(Event.DISCONNECT, None)
+        await self._dispatch(Event.DISCONNECT, error)
 
     async def _handle_disconnect_error(self, message: DisconnectEventError) -> None:
         """Process a failed disconnect event."""
@@ -662,3 +671,5 @@ class Connector:
             message.error.message,
         )
         await self._emit_request(int(message.id), None, error)
+        if isinstance(error, UnknownAppError):
+            await self._drop_session(error)

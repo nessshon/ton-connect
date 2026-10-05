@@ -1,6 +1,7 @@
 import asyncio
 import time
 import typing as t
+from contextlib import suppress
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -109,12 +110,23 @@ class ProviderStorage:
 
     async def increase_next_rpc_request_id(self) -> None:
         """Increment the next RPC request ID in storage."""
+        with suppress(TonConnectError):
+            await self.take_next_rpc_request_id()
+
+    async def take_next_rpc_request_id(self) -> int:
+        """Return the next RPC request ID and advance the counter under one lock.
+
+        :return: Request ID to use.
+        :raises TonConnectError: If no active connection is stored.
+        """
         async with self._lock:
             conn = await self._get_connection()
-            if isinstance(conn, ActiveConnection):
-                last_id = int(conn.next_rpc_request_id or 0)
-                conn = conn.model_copy(update={"next_rpc_request_id": last_id + 1})
-                await self.store_connection(conn)
+            if not isinstance(conn, ActiveConnection):
+                raise TonConnectError("Wallet is not connected")
+            request_id = int(conn.next_rpc_request_id or 0)
+            conn = conn.model_copy(update={"next_rpc_request_id": request_id + 1})
+            await self.store_connection(conn)
+            return request_id
 
     async def get_next_rpc_request_id(self) -> int:
         """Return the next RPC request ID (0 if not active)."""

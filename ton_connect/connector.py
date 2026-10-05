@@ -1,6 +1,7 @@
 import asyncio
 import time
 import typing as t
+from contextlib import suppress
 from enum import Enum
 
 from ton_core import NetworkGlobalID
@@ -106,6 +107,7 @@ class Connector:
         handlers: dict[Event, t.Callable[..., t.Awaitable[None]]],
         headers: dict[str, str] | None = None,
         context: dict[str, t.Any] | None = None,
+        on_close: t.Callable[[], None] | None = None,
     ) -> None:
         """Initialize the connector.
 
@@ -116,12 +118,14 @@ class Connector:
         :param handlers: Event handler mapping.
         :param headers: Extra HTTP headers, or ``None``.
         :param context: User context dict, or ``None``.
+        :param on_close: Called after :meth:`close`, or ``None``.
         """
         self._session_key = session_key
         self._manifest_url = manifest_url
         self._app_wallets = app_wallets
         self._handlers = handlers
         self._context: dict[str, t.Any] = context or {}
+        self._on_close = on_close
 
         self._wallet: Wallet | None = None
         self._network: NetworkGlobalID | None = None
@@ -132,6 +136,7 @@ class Connector:
         self._request_futures: dict[int, asyncio.Future[_RequestResult]] = {}
         self._request_timeout_tasks: dict[int, asyncio.Task[None]] = {}
         self._request_events: dict[int, Event] = {}
+        self._drop_task: asyncio.Task[bool] | None = None
 
         self._storage = storage
         self._provider = Provider(
@@ -241,12 +246,16 @@ class Connector:
         :param network: Expected network, or ``None``.
         :param app_wallet: Wallet descriptor for custom universal link, or ``None``.
         :param redirect_url: Post-connect redirect URL, or ``None``.
-        :param timeout: Connection timeout in seconds, or ``None``.
+        :param timeout: Connection timeout in seconds, capped at ``DEFAULT_CONNECT_TIMEOUT``
+            (the pending connection lifetime), or ``None`` for that cap.
         :return: Universal link for connecting a wallet.
         :raises WalletAlreadyConnectedError: If already connected.
+        :raises TonConnectError: If no bridge is reachable.
         """
         if self.connected:
             raise WalletAlreadyConnectedError()
+        if timeout is None or timeout > self.DEFAULT_CONNECT_TIMEOUT:
+            timeout = self.DEFAULT_CONNECT_TIMEOUT
         self._cancel_connect()
         await self._provider.close_connection()
         await self._provider.connect(request)
@@ -255,17 +264,16 @@ class Connector:
         loop = asyncio.get_running_loop()
         self._connect_future = loop.create_future()
 
-        if timeout is not None:
-            self._connect_timeout_task = asyncio.create_task(
-                self._run_connect_timeout(timeout),
-            )
+        self._connect_timeout_task = asyncio.create_task(
+            self._run_connect_timeout(timeout, self._provider.session_id),
+        )
 
         return self.make_connect_url(request, app_wallet, redirect_url=redirect_url)
 
     async def restore(self) -> bool:
         """Restore a connection from storage.
 
-        :return: ``True`` if an active connection was restored.
+        :return: ``True`` if a stored active connection was restored; its bridge stream may still be reconnecting.
         """
         connect_event = await self._provider.restore_connection()
         if connect_event is None:
@@ -409,6 +417,9 @@ class Connector:
         self._cancel_connect_timeout()
         if not future.done():
             future.cancel()
+        if not self.connected:
+            with suppress(RuntimeError):
+                self._drop_task = asyncio.get_running_loop().create_task(self._drop_pending(self._provider.session_id))
 
     def drop_request(self, request_id: int) -> None:
         """Cancel a pending request by ID.
@@ -426,6 +437,8 @@ class Connector:
         self._cancel_connect()
         self._cancel_all_requests()
         await self._provider.close_connection()
+        if self._on_close is not None:
+            self._on_close()
 
     async def pause(self) -> None:
         """Pause SSE listening."""
@@ -512,15 +525,19 @@ class Connector:
 
         return request_id
 
-    async def _run_connect_timeout(self, timeout: float) -> None:
+    async def _run_connect_timeout(self, timeout: float, session_id: str) -> None:
         """Fire connect timeout after delay."""
         try:
             await asyncio.sleep(timeout)
         except asyncio.CancelledError:
             return
         self._connect_timeout_task = None
-        await self._provider.close_connection()
-        await self._emit_connect(RequestTimeoutError())
+        if await self._drop_pending(session_id) and self._provider.session_id == session_id:
+            await self._emit_connect(RequestTimeoutError())
+
+    async def _drop_pending(self, session_id: str) -> bool:
+        """Drop the connect attempt *session_id* unless a newer attempt or a wallet answer came in between."""
+        return await self._provider.drop_pending(session_id)
 
     async def _run_request_timeout(self, request_id: int, timeout: float) -> None:
         """Fire request timeout after delay."""
@@ -565,7 +582,7 @@ class Connector:
         loop = asyncio.get_running_loop()
         self._connect_future = loop.create_future()
         self._connect_timeout_task = asyncio.create_task(
-            self._run_connect_timeout(timeout),
+            self._run_connect_timeout(timeout, self._provider.session_id),
         )
 
     def resume_request(self, request_id: int, event: Event, timeout: float) -> None:
@@ -623,6 +640,7 @@ class Connector:
             return
 
         self._wallet = wallet
+        self._network = wallet.account.network
         await self._emit_connect(None)
 
     async def _handle_connect_error(self, message: ConnectEventError) -> None:

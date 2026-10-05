@@ -215,6 +215,11 @@ class TonConnect:
             storage=self.storage,
             session_key=session_key,
         )
+
+        def forget() -> None:
+            if self._connectors.get(session_key) is connector:
+                del self._connectors[session_key]
+
         connector = Connector(
             storage=provider_storage,
             session_key=session_key,
@@ -223,6 +228,7 @@ class TonConnect:
             handlers=dict(self._handlers),
             headers=self.headers,
             context={**self._context, **context},
+            on_close=forget,
         )
         self._connectors[session_key] = connector
         return connector
@@ -247,6 +253,6 @@ class TonConnect:
 
     async def close_all(self) -> None:
         """Close all active connectors."""
-        for connector in self._connectors.values():
+        for connector in list(self._connectors.values()):
             await connector.close()
         self._connectors.clear()

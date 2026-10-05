@@ -22,7 +22,8 @@ from ..models import (
     WalletMessage,
     WalletResponse,
 )
-from .gateway import Gateway, retry_until_success
+from .gateway import Gateway
+from .source import ReadyState
 from .storage import ProviderStorage
 
 _WALLET_MESSAGE_ADAPTER: TypeAdapter[WalletMessage] = TypeAdapter(WalletMessage)
@@ -90,14 +91,20 @@ class Provider:
         """Store a pending connection and open SSE gateways.
 
         :param request: Connect request payload.
+        :raises TonConnectError: If no bridge is reachable.
         """
+        self._session_keypair = SessionKeyPair.generate()
+        self._session_id = self._session_keypair.session_id
         pending = PendingConnection(
             session_keypair=self._session_keypair,
             connect_request=request,
             connection_sources=self._connection_sources,
         )
         await self._storage.store_connection(pending)
-        await self._open_gateways()
+        if not await self._open_gateways(self._connection_sources):
+            await self.close_connection()
+            await self._storage.remove_connection()
+            raise TonConnectError("No bridge is reachable")
 
     async def request(self, request: RpcRequestBase) -> int:
         """Encrypt and send an RPC request to the wallet.
@@ -113,6 +120,11 @@ class Provider:
         gw = self._gateway
         if gw is None:
             raise TonConnectError("Bridge gateway is not initialized")
+        if gw.ready_state == ReadyState.CLOSED:
+            try:
+                await gw.register_session()
+            except Exception as e:
+                raise TonConnectError(f"Bridge is unreachable: {e}") from e
 
         if request.id is None:
             request.id = str(await self._storage.take_next_rpc_request_id())
@@ -142,20 +154,21 @@ class Provider:
             request = DisconnectRpcRequest()
 
             with suppress(Exception):
-                request_id = await self._storage.get_next_rpc_request_id()
-                request.id = str(request_id)
+                request.id = str(await self._storage.take_next_rpc_request_id())
 
                 message = conn.session.session_keypair.encrypt(
                     message=request.to_bytes(),
                     receiver_public_key=conn.session.wallet_public_key,
                 )
-                await self._gateway.send(
-                    message,
-                    conn.session.receiver,
-                    request.method,
-                    ttl=self.SEND_TTL,
-                    attempts=self.SEND_ATTEMPTS,
-                    delay=self.SEND_DELAY,
+                await asyncio.wait_for(
+                    self._gateway.send(
+                        message,
+                        conn.session.receiver,
+                        request.method,
+                        ttl=self.SEND_TTL,
+                        attempts=1,
+                    ),
+                    self.CONNECT_TIMEOUT,
                 )
 
         await self._storage.remove_connection()
@@ -174,8 +187,7 @@ class Provider:
         if isinstance(conn, PendingConnection):
             self._session_keypair = conn.session_keypair
             self._session_id = self._session_keypair.session_id
-            await self._close_gateways()
-            await self._open_gateways()
+            await self._open_gateways(conn.connection_sources)
             return None
 
         if not isinstance(conn, ActiveConnection):
@@ -184,7 +196,7 @@ class Provider:
         self._session_keypair = conn.session.session_keypair
         self._session_id = self._session_keypair.session_id
 
-        await self._close_gateways()
+        await self.close_connection()
 
         self._gateway = Gateway(
             storage=self._storage,
@@ -196,14 +208,9 @@ class Provider:
         )
 
         try:
-            await retry_until_success(
-                self._gateway.register_session,
-                attempts=self.CONNECT_ATTEMPTS,
-                delay=self.RECONNECT_DELAY,
-            )
+            await self._gateway.register_session(timeout=2)
         except Exception:
-            await self.close_connection()
-            return None
+            await self._gateway.reconnect()
 
         return conn.connect_event
 
@@ -220,6 +227,28 @@ class Provider:
 
         for pgw in pending:
             await pgw.close()
+
+    async def drop_pending(self, session_id: str) -> bool:
+        """Close the bridges and forget the pending connection of the connect attempt *session_id*.
+
+        Holds the lock under which a wallet answer becomes the active connection,
+        so the answer and the drop never interleave.
+
+        :param session_id: Session ID of the connect attempt to drop.
+        :return: ``True`` if dropped, ``False`` if a newer attempt started or the wallet already answered.
+        """
+        async with self._connect_lock:
+            with suppress(Exception):
+                if isinstance(await self._storage.get_connection(), ActiveConnection):
+                    return False
+            if self._session_id != session_id:
+                return False
+            await self.close_connection()
+            with suppress(TonConnectError):
+                pending = await self._storage.get_pending_connection()
+                if pending.session_keypair.session_id == session_id:
+                    await self._storage.remove_connection()
+            return True
 
     async def pause(self) -> None:
         """Pause SSE listening on all gateways."""
@@ -249,39 +278,34 @@ class Provider:
             if wallet.bridge_url is not None
         ]
 
-    async def _open_gateways(self) -> None:
-        """Open SSE gateways for all connection sources."""
+    async def _open_gateways(self, sources: list[ConnectionSource]) -> bool:
+        """Open one SSE gateway per unique bridge URL; failed ones keep retrying in background.
+
+        :param sources: Connection sources to open.
+        :return: ``True`` if at least one gateway opened or there was nothing to open.
+        """
         await self.close_connection()
 
-        for connection_source in self._connection_sources:
+        for bridge_url in dict.fromkeys(source.bridge_url for source in sources):
             gw = Gateway(
                 storage=self._storage,
                 session_id=self._session_id,
-                bridge_url=connection_source.bridge_url,
+                bridge_url=bridge_url,
                 headers=self._headers,
                 on_gateway_message=self._on_gateway_message,
                 on_gateway_error=self._on_gateway_error,
             )
             self._pending_gateways.append(gw)
 
-        if self._pending_gateways:
-            tasks = [gw.register_session(timeout=2) for gw in self._pending_gateways]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            alive = []
-            first_error: BaseException | None = None
-            for gw, result in zip(self._pending_gateways, results, strict=True):
-                if isinstance(result, BaseException):
-                    if first_error is None:
-                        first_error = result
-                    await gw.close()
-                else:
-                    alive.append(gw)
-
-            self._pending_gateways = alive
-
-            if not self._pending_gateways and first_error is not None:
-                raise first_error
+        pending = self._pending_gateways
+        results = await asyncio.gather(*(gw.register_session(timeout=2) for gw in pending), return_exceptions=True)
+        opened = not results
+        for gw, result in zip(pending, results, strict=True):
+            if isinstance(result, BaseException):
+                await gw.reconnect()
+            else:
+                opened = True
+        return opened
 
     async def _close_gateways(self, *, exclude: Gateway | None = None) -> None:
         """Close all pending gateways, optionally keeping one."""

@@ -119,7 +119,7 @@ def _generate_regular_universal_link(
 
     q["v"] = protocol_version
     q["id"] = session_id
-    q["r"] = message.dump_json()
+    q["r"] = message.dump_json(exclude_none=True)
     if redirect_url is not None:
         q["ret"] = redirect_url
 

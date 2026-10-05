@@ -3,7 +3,7 @@ import time
 import typing as t
 
 from pydantic import Field, field_serializer, field_validator
-from ton_core import Cell, TextCommentBody
+from ton_core import Address, Cell, TextCommentBody
 
 from ._types import (
     A,
@@ -21,14 +21,14 @@ class SendTransactionMessage(BaseModel):
     """Single outgoing message within a ``sendTransaction`` request."""
 
     address: TonAddress
-    """Destination address."""
+    """Destination address, sent with its own bounce flag (raw form is non-bounceable); use ``EQ…`` for contracts."""
     amount: int
     """Transfer amount in nanotons."""
     state_init: OptionalWalletStateInit = A("stateInit", default=None)
     """Contract ``StateInit``, or ``None``."""
     payload: OptionalBocCell | str | None = None
     """Message body ``Cell``, or ``None``."""
-    extra_currency: dict[int, str] | None = A("extraCurrency", default=None)
+    extra_currency: dict[int, str] | None = A("extra_currency", default=None, legacy="extraCurrency")
     """Extra currency map, or ``None``."""
 
     @field_validator("amount", mode="before")
@@ -57,7 +57,7 @@ class SendTransactionPayload(BaseModel):
     """Target network, or ``None``."""
     from_address: OptionalTonAddress = A("from", default=None)
     """Sender address override, or ``None``."""
-    valid_until: int = A("validUntil", default=None)
+    valid_until: int = A("valid_until", default=None, legacy="validUntil")
     """Expiry unix timestamp."""
     messages: list[SendTransactionMessage] = Field(default_factory=list)
     """Outgoing messages."""
@@ -69,6 +69,10 @@ class SendTransactionPayload(BaseModel):
             return int(time.time()) + 5 * 60
         return int(v)
 
+    @field_serializer("from_address")
+    def _s_from_address(self, v: Address | None) -> str | None:
+        return v.to_str(is_user_friendly=False) if v is not None else None
+
 
 class BaseSignDataPayload(BaseModel):
     """Common fields for all ``signData`` payload types."""
@@ -77,6 +81,10 @@ class BaseSignDataPayload(BaseModel):
     """Target network, or ``None``."""
     from_address: OptionalTonAddress = A("from", default=None)
     """Wallet address, or ``None``."""
+
+    @field_serializer("from_address")
+    def _s_from_address(self, v: Address | None) -> str | None:
+        return v.to_str(is_user_friendly=False) if v is not None else None
 
 
 class SignDataPayloadText(BaseSignDataPayload):

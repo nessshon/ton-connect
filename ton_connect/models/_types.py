@@ -1,13 +1,14 @@
 import typing as t
 
 from pydantic import (
-    BaseModel as _BaseModel,
-)
-from pydantic import (
+    AliasChoices,
     BeforeValidator,
     ConfigDict,
     Field,
     PlainSerializer,
+)
+from pydantic import (
+    BaseModel as _BaseModel,
 )
 from ton_core import Address, Binary, Cell, NetworkGlobalID, PublicKey, StateInit, cell_to_b64, to_cell
 
@@ -52,16 +53,18 @@ class BaseModel(_BaseModel):
 
 
 # noinspection PyPep8Naming
-def A(name: str, default: t.Any = ...) -> t.Any:
+def A(name: str, default: t.Any = ..., legacy: str | None = None) -> t.Any:
     """Create a Pydantic ``Field`` with matching validation and serialization alias.
 
     :param name: Alias name.
     :param default: Default value, or ``...`` for required.
+    :param legacy: Former alias still accepted on input, or ``None``.
     :return: Pydantic ``Field``.
     """
+    alias: str | AliasChoices = name if legacy is None else AliasChoices(name, legacy)
     if default is ...:
-        return Field(validation_alias=name, serialization_alias=name)
-    return Field(default=default, validation_alias=name, serialization_alias=name)
+        return Field(validation_alias=alias, serialization_alias=name)
+    return Field(default=default, validation_alias=alias, serialization_alias=name)
 
 
 def _conv_opt(conv: t.Callable[[t.Any], T]) -> t.Callable[[t.Any], T | None]:
@@ -113,7 +116,7 @@ def _as_binary64(v: t.Any) -> Binary:
 
 
 def _s_address(v: Address) -> str:
-    return v.to_str(is_user_friendly=True, is_bounceable=False)
+    return v.to_str(is_user_friendly=True, is_bounceable=v.is_bounceable)
 
 
 def _s_chain(v: NetworkGlobalID) -> str:

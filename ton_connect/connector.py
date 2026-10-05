@@ -186,6 +186,11 @@ class Connector:
         bridge_url = self._provider.bridge_url
         if bridge_url is None:
             return None
+        if self._wallet is not None:
+            name = self._wallet.device.app_name.lower()
+            for w in self._app_wallets:
+                if name in (w.app_name.lower(), w.name.lower()):
+                    return w
         for w in self._app_wallets:
             if w.bridge_url == bridge_url:
                 return w

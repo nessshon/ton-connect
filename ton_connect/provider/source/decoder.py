@@ -28,10 +28,9 @@ class EventDecoder:
         if not text:
             return []
 
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        self._buffer += text
-
-        buf = self._buffer
+        buf = (self._buffer + text).replace("\r\n", "\n")
+        pending = "\r" if buf.endswith("\r") else ""
+        buf = buf[: len(buf) - len(pending)].replace("\r", "\n")
         events: list[EventMessage] = []
 
         while True:
@@ -45,17 +44,13 @@ class EventDecoder:
             if raw_event.strip():
                 events.append(EventMessage.parse(raw_event))
 
-        self._buffer = buf
+        self._buffer = buf + pending
         return events
 
     def flush(self) -> list[EventMessage]:
-        """Flush remaining buffer and return any trailing event.
+        """Discard an unterminated trailing event, as the SSE spec requires at end of stream.
 
-        :return: List with at most one event.
+        :return: Always an empty list.
         """
-        raw = self._buffer
         self.reset()
-
-        if raw.strip():
-            return [EventMessage.parse(raw)]
         return []

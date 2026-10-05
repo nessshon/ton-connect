@@ -25,7 +25,7 @@ class EventMessage:
         data_parts: list[str] = []
         event_id: str | None = None
 
-        for line in raw.splitlines():
+        for line in raw.split("\n"):
             if not line or line.startswith(":"):
                 continue
 

@@ -134,20 +134,13 @@ class EventSource:
                         with suppress(Exception):
                             await self._on_error(e)
 
-            for msg in self._decoder.flush():
-                try:
-                    await self._on_message(msg)
-                except Exception as e:  # noqa: PERF203
-                    with suppress(Exception):
-                        await self._on_error(e)
-
             exc = ConnectionError("EventSource connection closed")
         except asyncio.CancelledError:
             return
         except Exception as e:
             exc = e
         finally:
+            await self.close()
             if exc is not None:
                 with suppress(Exception):
                     await self._on_error(exc)
-            await self.close()

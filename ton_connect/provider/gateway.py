@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import logging
+import random
 import typing as t
 from contextlib import suppress
 
@@ -18,6 +20,8 @@ from .storage import ProviderStorage
 
 _T = t.TypeVar("_T")
 
+logger = logging.getLogger(__name__)
+
 
 async def retry_until_success(
     fn: t.Callable[[], t.Awaitable[_T]],
@@ -31,14 +35,14 @@ async def retry_until_success(
     :param attempts: Maximum number of attempts.
     :param delay: Delay between attempts in seconds.
     :return: Result of *fn*.
-    :raises BaseException: Last exception if all attempts fail.
+    :raises Exception: Last exception if all attempts fail; cancellation is never retried.
     """
-    last_error: BaseException | None = None
+    last_error: Exception | None = None
 
     for i in range(attempts):
         try:
             return await fn()
-        except BaseException as exc:  # noqa: PERF203
+        except Exception as exc:  # noqa: PERF203
             last_error = exc
             if i + 1 >= attempts:
                 break
@@ -55,8 +59,9 @@ class Gateway:
     POST_PATH = "message"
     HEARTBEAT_MESSAGE = "heartbeat"
 
-    RECONNECT_ATTEMPTS: int = 5
+    RECONNECT_ATTEMPTS: int = 150
     RECONNECT_DELAY: float = 2.0
+    SSE_READ_TIMEOUT: float = 60.0
 
     def __init__(
         self,
@@ -90,6 +95,7 @@ class Gateway:
 
         self._connect_lock = asyncio.Lock()
         self._reconnect_task: asyncio.Task[None] | None = None
+        self._reconnect_attempts = 0
 
         self._closed = False
         self._paused = False
@@ -115,15 +121,17 @@ class Gateway:
         :param timeout: Connection timeout in seconds.
         :raises TonConnectError: If the gateway is closed.
         """
+        self._reconnect_attempts = 0
+        await self._register_session(timeout)
+
+    async def _register_session(self, timeout: float = 12.0) -> None:
+        """Open an SSE session without resetting the reconnect budget."""
         if self._closed:
             raise TonConnectError("Bridge is closed")
         if self._paused:
             return
 
         async with self._connect_lock:
-            if self._closed or self._paused:  # race condition protection
-                return  # type: ignore[unreachable]
-
             state = self.ready_state
             if state in (ReadyState.OPEN, ReadyState.CONNECTING):
                 return
@@ -131,6 +139,8 @@ class Gateway:
             await self._close_event_source()
 
             last_event_id = await self._storage.get_last_event_id()
+            if self._closed or self._paused:  # race condition protection
+                return  # type: ignore[unreachable]
             url = self._make_open_url(last_event_id)
             session = await self._ensure_session()
             es = EventSource(
@@ -207,7 +217,10 @@ class Gateway:
         if self._closed or not self._paused:
             return
         self._paused = False
-        await self.register_session()
+        try:
+            await self.register_session()
+        except Exception:
+            await self.reconnect()
 
     async def close(self) -> None:
         """Permanently close the gateway and release resources."""
@@ -223,8 +236,11 @@ class Gateway:
         await self._close_event_source()
         await self._close_session()
 
-    async def _reconnect(self) -> None:
-        """Schedule automatic reconnection with retries."""
+    async def reconnect(self) -> None:
+        """Schedule a background reconnect within the attempt budget.
+
+        Does nothing if the gateway is closed, paused or already reconnecting.
+        """
         if self._closed or self._paused:
             return
 
@@ -234,35 +250,45 @@ class Gateway:
 
         async def _runner() -> None:
             await self._close_event_source()
-            await asyncio.sleep(self.RECONNECT_DELAY)
+            last_error: Exception | None = None
+            while self._reconnect_attempts < self.RECONNECT_ATTEMPTS:
+                self._reconnect_attempts += 1
+                await asyncio.sleep(self.RECONNECT_DELAY * random.uniform(0.5, 1.5))
+                if self._closed or self._paused:
+                    return
+                try:
+                    await self._register_session()
+                    return
+                except Exception as exc:
+                    last_error = exc
+
             if self._closed or self._paused:
                 return
-            try:
-                await retry_until_success(
-                    self.register_session,
-                    attempts=self.RECONNECT_ATTEMPTS,
-                    delay=self.RECONNECT_DELAY,
-                )
-            except Exception as exc:
-                if not self._closed and not self._paused:
-                    with suppress(Exception):
-                        err = TonConnectError(
-                            f"Bridge reconnect failed after {self.RECONNECT_ATTEMPTS} attempts: {exc}"
-                        )
-                        await self._on_gateway_error(err)
+            reason = last_error or "stream closed without events"
+            logger.warning(
+                "Bridge %s: reconnect failed after %s attempts: %s",
+                self._bridge_url,
+                self.RECONNECT_ATTEMPTS,
+                reason,
+            )
+            with suppress(Exception):
+                err = TonConnectError(f"Bridge reconnect failed after {self.RECONNECT_ATTEMPTS} attempts: {reason}")
+                await self._on_gateway_error(err)
 
         task = asyncio.create_task(_runner())
         self._reconnect_task = task
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Return the HTTP session, creating one if needed."""
+        if self._closed:
+            raise TonConnectError("Bridge is closed")
         if self._http_session is None or self._http_session.closed:
             self._http_session = aiohttp.ClientSession(
                 headers=self._headers,
                 timeout=aiohttp.ClientTimeout(
                     total=None,
                     sock_connect=30,
-                    sock_read=None,
+                    sock_read=self.SSE_READ_TIMEOUT,
                 ),
             )
         return self._http_session
@@ -288,28 +314,19 @@ class Gateway:
         if self._closed or self._paused:
             return
 
-        state = self.ready_state
-        if state == ReadyState.CONNECTING:
-            with suppress(Exception):
-                err = TonConnectError("Bridge error, failed to connect")
-                await self._on_gateway_error(err)
-            await self._reconnect()
-            return
-
-        if state == ReadyState.OPEN:
+        if self.ready_state in (ReadyState.OPEN, ReadyState.CONNECTING):
             with suppress(Exception):
                 await self._on_gateway_error(exc)
             return
 
-        await self._reconnect()
+        await self.reconnect()
 
     async def _on_event_source_message(self, e: EventMessage) -> None:
         """Handle a raw SSE event, parsing and dispatching it."""
+        if e.data is not None or e.event == self.HEARTBEAT_MESSAGE:
+            self._reconnect_attempts = 0
         if e.data is None or e.data == self.HEARTBEAT_MESSAGE:
             return
-        if e.event_id:
-            await self._storage.store_last_event_id(e.event_id)
-
         if self._closed or self._paused:
             return
 
@@ -319,13 +336,15 @@ class Gateway:
             with suppress(Exception):
                 err = TonConnectError(f"Bridge message parse failed, message: `{e.data}`, error: {exc}")
                 await self._on_gateway_error(err)
-            return
+        else:
+            try:
+                await self._on_gateway_message(msg, self._bridge_url)
+            except Exception as exc:
+                with suppress(Exception):
+                    await self._on_gateway_error(exc)
 
-        try:
-            await self._on_gateway_message(msg, self._bridge_url)
-        except Exception as exc:
-            with suppress(Exception):
-                await self._on_gateway_error(exc)
+        if e.event_id:
+            await self._storage.store_last_event_id(e.event_id)
 
     def _make_open_url(self, last_event_id: str | None = None) -> URL:
         """Build the SSE endpoint URL."""

@@ -147,6 +147,8 @@ class _BaseVerify(abc.ABC, t.Generic[_TDTO]):
         :param allowed_domains: Permitted domain strings.
         :param valid_auth_time: Max age of signature in seconds.
         :param get_wallet_public_key: Async resolver for unknown wallet codes, or ``None``.
+            Required for key-rotating wallets such as the Telegram wallet: it must return
+            the current on-chain key (``get_public_key``). Without it they are rejected.
         :return: ``True`` if all checks pass.
         :raises BadSignatureError: If any validation step fails.
         """

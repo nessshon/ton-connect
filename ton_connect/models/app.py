@@ -1,9 +1,9 @@
 import typing as t
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ._types import A, BaseModel
-from .feature import FeatureTypes
+from .feature import FeatureTypes, known_features
 
 
 class JSBridgeType(BaseModel):
@@ -54,6 +54,11 @@ class AppWallet(BaseModel):
     """Supported platform identifiers."""
     features: FeatureTypes
     """Declared wallet features."""
+
+    @field_validator("features", mode="before")
+    @classmethod
+    def _v_features(cls, v: t.Any) -> t.Any:
+        return known_features(v)
 
     @property
     def bridge_url(self) -> str | None:

@@ -1,16 +1,17 @@
 import json
+import logging
 import time
 import typing as t
 from contextlib import suppress
 from pathlib import Path
 
-from pydantic import TypeAdapter
+from pydantic import ValidationError
 from ton_core import load_json
 
 from ..exceptions import FetchWalletsError
-from ..models.app import AppWallet, AppWallets
+from ..models.app import AppWallet
 
-_WALLETS_ADAPTER = TypeAdapter(AppWallets)
+logger = logging.getLogger(__name__)
 
 DEFAULT_WALLETS_LIST_SOURCE = "https://config.ton.org/wallets-v2.json"
 """Default URL for the wallets catalogue."""
@@ -108,10 +109,18 @@ class AppWalletsLoader:
         :return: Wallets with a bridge URL.
         :raises FetchWalletsError: If data is invalid.
         """
-        try:
-            data = _WALLETS_ADAPTER.validate_python(raw)
-        except Exception as e:
-            raise FetchWalletsError(f"Invalid wallets data: {e}") from e
+        if not isinstance(raw, list):
+            raise FetchWalletsError("Invalid wallets data: expected a list")
+
+        data: list[AppWallet] = []
+        for item in raw:
+            try:
+                data.append(AppWallet.model_validate(item))
+            except ValidationError as e:  # noqa: PERF203
+                name = item.get("app_name") if isinstance(item, dict) else None
+                logger.warning("Skipping invalid wallet %s: %s", name, e)
+        if raw and not data:
+            raise FetchWalletsError("Invalid wallets data: no valid entries")
 
         return [w for w in data if w.bridge_url]
 

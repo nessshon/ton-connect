@@ -1,11 +1,9 @@
 import typing as t
 
-from pydantic import Field, TypeAdapter, field_validator
+from pydantic import Field, field_validator
 
 from ._types import A, BaseModel
-from .feature import FeatureType, FeatureTypes
-
-_FEATURE_ADAPTER: TypeAdapter[FeatureType] = TypeAdapter(FeatureType)
+from .feature import FeatureTypes, known_features
 
 
 class Device(BaseModel):
@@ -24,5 +22,5 @@ class Device(BaseModel):
 
     @field_validator("features", mode="before")
     @classmethod
-    def _v_features(cls, v: t.Any) -> FeatureTypes:
-        return [_FEATURE_ADAPTER.validate_python(f) for f in v if isinstance(f, dict)]
+    def _v_features(cls, v: t.Any) -> t.Any:
+        return known_features(v)

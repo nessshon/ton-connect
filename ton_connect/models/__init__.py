@@ -20,10 +20,12 @@ from .dto import (
     TonProofPayloadDto,
 )
 from .feature import (
+    EmbeddedRequestFeature,
     FeatureType,
     FeatureTypes,
     SendTransactionFeature,
     SignDataFeature,
+    SignMessageFeature,
 )
 from .message import IncomingMessage
 from .payload import (
@@ -113,6 +115,7 @@ __all__ = [
     "DisconnectEventSuccess",
     "DisconnectRpcRequest",
     "DisconnectRpcResponseSuccess",
+    "EmbeddedRequestFeature",
     "EventBase",
     "EventErrorPayload",
     "FeatureType",
@@ -143,6 +146,7 @@ __all__ = [
     "SignDataResult",
     "SignDataRpcRequest",
     "SignDataRpcResponseSuccess",
+    "SignMessageFeature",
     "TonAddressItem",
     "TonAddressItemReply",
     "TonProofData",

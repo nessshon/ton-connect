@@ -18,6 +18,7 @@ from ton_core import (
     PublicKey,
     SignatureDomain,
     StateInit,
+    WalletTgData,
     WalletV1Data,
     WalletV2Data,
     WalletV3Data,
@@ -61,7 +62,9 @@ _WALLET_DATA_MODELS: dict[Cell, type[BaseWalletData]] = {
     _code(ContractVersion.WalletV4R2): WalletV4Data,
     _code(ContractVersion.WalletV5R1): WalletV5Data,
     _code(ContractVersion.WalletV5Beta): WalletV5BetaData,
+    _code(ContractVersion.WalletTg): WalletTgData,
 }
+_KEY_ROTATING_CODES = {_code(ContractVersion.WalletTg)}
 
 _TDTO = t.TypeVar("_TDTO", TonProofPayloadDto, SignDataPayloadDto)
 _GetWalletPublicKey = t.Callable[[Address], t.Awaitable[PublicKey | None]]
@@ -146,9 +149,10 @@ class _BaseVerify(abc.ABC, t.Generic[_TDTO]):
 
         :param allowed_domains: Permitted domain strings.
         :param valid_auth_time: Max age of signature in seconds.
-        :param get_wallet_public_key: Async resolver for unknown wallet codes, or ``None``.
-            Required for key-rotating wallets such as the Telegram wallet: it must return
-            the current on-chain key (``get_public_key``). Without it they are rejected.
+        :param get_wallet_public_key: Async resolver of the current on-chain key (``get_public_key``), or ``None``.
+            Called for unknown wallet codes and for key-rotating wallets such as the Telegram wallet.
+            Without it the Telegram wallet is checked against its initial key from ``walletStateInit``,
+            which still accepts a key the owner has rotated out.
         :return: ``True`` if all checks pass.
         :raises BadSignatureError: If any validation step fails.
         """
@@ -238,8 +242,9 @@ class _BaseVerify(abc.ABC, t.Generic[_TDTO]):
         :raises BadSignatureError: If key cannot be resolved or mismatches.
         """
         public_key = cls._try_parse_public_key(wallet_state_init, network)
-        if public_key is None and get_wallet_public_key is not None:
-            public_key = await get_wallet_public_key(address)
+        rotating = wallet_state_init.code in _KEY_ROTATING_CODES
+        if get_wallet_public_key is not None and (public_key is None or rotating):
+            public_key = await get_wallet_public_key(address) or public_key
 
         if public_key is None:
             raise BadSignatureError("Public key not found")

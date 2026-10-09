@@ -1,5 +1,6 @@
+import aiohttp
 from nacl.exceptions import BadSignatureError
-from ton_core import NetworkGlobalID
+from ton_core import Address, NetworkGlobalID, PublicKey
 
 from ton_connect import AppWalletsLoader, FileStorage, TonConnect, VerifySignData
 from ton_connect.models import (
@@ -26,6 +27,31 @@ STORAGE_PATH = "./tonconnect-storage.json"
 
 # Text the user will be asked to sign in their wallet UI
 SIGN_TEXT = "I agree to the Terms of Service"
+
+# Toncenter API for the network the example connects to (testnet)
+# Used to read a wallet's current public key; use https://toncenter.com/api/v2 for mainnet
+TONCENTER_API = "https://testnet.toncenter.com/api/v2"
+
+
+async def get_wallet_public_key(address: Address) -> PublicKey | None:
+    """Read the wallet's current public key from the chain (``get_public_key`` get-method).
+
+    Optional for verify(): without it the Telegram wallet is checked against the initial key
+    from walletStateInit, which keeps accepting a key its owner has rotated out.
+    Returns None if the wallet is not deployed yet or the API answers with an error; the initial key is then used.
+    """
+    body = {"address": address.to_str(), "method": "get_public_key", "stack": []}
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with (
+        aiohttp.ClientSession(timeout=timeout) as session,
+        session.post(f"{TONCENTER_API}/runGetMethod", json=body) as resp,
+    ):
+        if not resp.ok:
+            return None
+        result = (await resp.json())["result"]
+    if result["exit_code"] != 0 or not result["stack"]:
+        return None
+    return PublicKey(result["stack"][0][1])
 
 
 async def main() -> None:
@@ -121,9 +147,11 @@ async def main() -> None:
             domain=result.domain,
             payload=result.payload,
         )
+        # get_wallet_public_key: optional, checks the Telegram wallet against its current key
         await VerifySignData(sign_data_payload).verify(
             allowed_domains=[APP_DOMAIN],
             valid_auth_time=5 * 60,  # 5 minutes
+            get_wallet_public_key=get_wallet_public_key,
         )
         print("SignData verified")
     except BadSignatureError as e:

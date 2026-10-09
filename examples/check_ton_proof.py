@@ -1,3 +1,6 @@
+import aiohttp
+from ton_core import Address, PublicKey
+
 from ton_connect import VerifyTonProof
 from ton_connect.models import TonProofPayloadDto
 
@@ -32,6 +35,32 @@ PAYLOAD = {
 }
 
 
+# Toncenter API for the network of the proof (mainnet)
+# Used to read a wallet's current public key; use https://testnet.toncenter.com/api/v2 for testnet
+TONCENTER_API = "https://toncenter.com/api/v2"
+
+
+async def get_wallet_public_key(address: Address) -> PublicKey | None:
+    """Read the wallet's current public key from the chain (``get_public_key`` get-method).
+
+    Optional for verify(): without it the Telegram wallet is checked against the initial key
+    from walletStateInit, which keeps accepting a key its owner has rotated out.
+    Returns None if the wallet is not deployed yet or the API answers with an error; the initial key is then used.
+    """
+    body = {"address": address.to_str(), "method": "get_public_key", "stack": []}
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with (
+        aiohttp.ClientSession(timeout=timeout) as session,
+        session.post(f"{TONCENTER_API}/runGetMethod", json=body) as resp,
+    ):
+        if not resp.ok:
+            return None
+        result = (await resp.json())["result"]
+    if result["exit_code"] != 0 or not result["stack"]:
+        return None
+    return PublicKey(result["stack"][0][1])
+
+
 async def main() -> None:
     # Parse and validate the raw payload dict into a typed DTO
     payload = TonProofPayloadDto.model_validate(PAYLOAD)
@@ -45,9 +74,14 @@ async def main() -> None:
     #
     # allowed_domains: list of domains your backend accepts — reject anything else
     # valid_auth_time: max age of the proof in seconds (15 min is typical)
+    # get_wallet_public_key: optional, checks the Telegram wallet against its current key
+    #
+    # The sample proof above is old, so this run ends with "Signature expired";
+    # pass a fresh proof from your frontend
     await VerifyTonProof(payload).verify(
         allowed_domains=["github.com"],
         valid_auth_time=15 * 60,  # 15 minutes
+        get_wallet_public_key=get_wallet_public_key,
     )
     print("TonProof verified")
 

@@ -61,7 +61,7 @@ class Gateway:
 
     RECONNECT_ATTEMPTS: int = 150
     RECONNECT_DELAY: float = 2.0
-    SSE_READ_TIMEOUT: float = 60.0
+    SSE_READ_TIMEOUT: float = 90.0
 
     def __init__(
         self,

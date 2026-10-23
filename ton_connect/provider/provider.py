@@ -88,10 +88,9 @@ class Provider:
         return self._gateway.bridge_url if self._gateway else None
 
     async def connect(self, request: ConnectRequest) -> None:
-        """Store a pending connection and open SSE gateways.
+        """Store a pending connection and create SSE gateways; ``open_gateways`` opens them.
 
         :param request: Connect request payload.
-        :raises TonConnectError: If no bridge is reachable.
         """
         self._session_keypair = SessionKeyPair.generate()
         self._session_id = self._session_keypair.session_id
@@ -101,10 +100,22 @@ class Provider:
             connection_sources=self._connection_sources,
         )
         await self._storage.store_connection(pending)
-        if not await self._open_gateways(self._connection_sources):
-            await self.close_connection()
-            await self._storage.remove_connection()
-            raise TonConnectError("No bridge is reachable")
+        await self._create_gateways(self._connection_sources)
+
+    async def open_gateways(self) -> bool:
+        """Make the first attempt to open the pending gateways; failed ones keep retrying in background.
+
+        :return: ``True`` if at least one gateway opened or there was nothing to open.
+        """
+        pending = self._pending_gateways
+        results = await asyncio.gather(*(gw.register_session(timeout=2) for gw in pending), return_exceptions=True)
+        opened = not results
+        for gw, result in zip(pending, results, strict=True):
+            if isinstance(result, BaseException):
+                await gw.reconnect()
+            else:
+                opened = True
+        return opened
 
     async def request(self, request: RpcRequestBase) -> int:
         """Encrypt and send an RPC request to the wallet.
@@ -187,7 +198,8 @@ class Provider:
         if isinstance(conn, PendingConnection):
             self._session_keypair = conn.session_keypair
             self._session_id = self._session_keypair.session_id
-            await self._open_gateways(conn.connection_sources)
+            await self._create_gateways(conn.connection_sources)
+            await self.open_gateways()
             return None
 
         if not isinstance(conn, ActiveConnection):
@@ -278,11 +290,10 @@ class Provider:
             if wallet.bridge_url is not None
         ]
 
-    async def _open_gateways(self, sources: list[ConnectionSource]) -> bool:
-        """Open one SSE gateway per unique bridge URL; failed ones keep retrying in background.
+    async def _create_gateways(self, sources: list[ConnectionSource]) -> None:
+        """Replace all gateways with one pending gateway per unique bridge URL.
 
-        :param sources: Connection sources to open.
-        :return: ``True`` if at least one gateway opened or there was nothing to open.
+        :param sources: Connection sources to create gateways for.
         """
         await self.close_connection()
 
@@ -296,16 +307,6 @@ class Provider:
                 on_gateway_error=self._on_gateway_error,
             )
             self._pending_gateways.append(gw)
-
-        pending = self._pending_gateways
-        results = await asyncio.gather(*(gw.register_session(timeout=2) for gw in pending), return_exceptions=True)
-        opened = not results
-        for gw, result in zip(pending, results, strict=True):
-            if isinstance(result, BaseException):
-                await gw.reconnect()
-            else:
-                opened = True
-        return opened
 
     async def _close_gateways(self, *, exclude: Gateway | None = None) -> None:
         """Close all pending gateways, optionally keeping one."""

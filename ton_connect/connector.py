@@ -8,6 +8,7 @@ from enum import Enum
 from ton_core import NetworkGlobalID
 
 from .exceptions import (
+    BridgeUnreachableError,
     RequestTimeoutError,
     TonConnectError,
     TonConnectErrors,
@@ -136,6 +137,7 @@ class Connector:
 
         self._connect_future: asyncio.Future[_ConnectResult] | None = None
         self._connect_timeout_task: asyncio.Task[None] | None = None
+        self._open_bridges_task: asyncio.Task[None] | None = None
 
         self._request_futures: dict[int, asyncio.Future[_RequestResult]] = {}
         self._request_timeout_tasks: dict[int, asyncio.Task[None]] = {}
@@ -283,7 +285,6 @@ class Connector:
             (the pending connection lifetime), or ``None`` for that cap.
         :return: Universal link for connecting a wallet.
         :raises WalletAlreadyConnectedError: If already connected.
-        :raises TonConnectError: If no bridge is reachable.
         """
         if self.connected:
             raise WalletAlreadyConnectedError()
@@ -300,6 +301,7 @@ class Connector:
         self._connect_timeout_task = asyncio.create_task(
             self._run_connect_timeout(timeout, self._provider.session_id),
         )
+        self._open_bridges_task = asyncio.create_task(self._run_open_bridges(self._provider.session_id))
 
         return self.make_connect_url(request, app_wallet, redirect_url=redirect_url)
 
@@ -447,7 +449,7 @@ class Connector:
         if future is None:
             return
         self._connect_future = None
-        self._cancel_connect_timeout()
+        self._cancel_connect_tasks()
         if not future.done():
             future.cancel()
         if not self.connected:
@@ -500,7 +502,7 @@ class Connector:
 
     async def _emit_connect(self, error: TonConnectError | None) -> None:
         """Resolve the connect future and dispatch the event."""
-        self._cancel_connect_timeout()
+        self._cancel_connect_tasks()
         if self._connect_future is not None and not self._connect_future.done():
             self._connect_future.set_result((self._wallet, error))
         await self._dispatch(Event.CONNECT, error)
@@ -570,6 +572,13 @@ class Connector:
         if await self._drop_pending(session_id) and self._provider.session_id == session_id:
             await self._emit_connect(RequestTimeoutError())
 
+    async def _run_open_bridges(self, session_id: str) -> None:
+        """Fail the connect attempt *session_id* if no bridge opens on the first attempt."""
+        opened = await self._provider.open_gateways()
+        self._open_bridges_task = None
+        if not opened and await self._drop_pending(session_id) and self._provider.session_id == session_id:
+            await self._emit_connect(BridgeUnreachableError())
+
     async def _drop_pending(self, session_id: str) -> bool:
         """Drop the connect attempt *session_id* unless a newer attempt or a wallet answer came in between."""
         return await self._provider.drop_pending(session_id)
@@ -584,15 +593,18 @@ class Connector:
         await self._emit_request(request_id, None, RequestTimeoutError())
         self.drop_request(request_id)
 
-    def _cancel_connect_timeout(self) -> None:
-        """Cancel the connect timeout task."""
+    def _cancel_connect_tasks(self) -> None:
+        """Cancel the connect timeout and first bridge opening tasks."""
         if self._connect_timeout_task is not None:
             self._connect_timeout_task.cancel()
             self._connect_timeout_task = None
+        if self._open_bridges_task is not None:
+            self._open_bridges_task.cancel()
+            self._open_bridges_task = None
 
     def _cancel_connect(self) -> None:
-        """Cancel the pending connect future and timeout."""
-        self._cancel_connect_timeout()
+        """Cancel the pending connect future and its tasks."""
+        self._cancel_connect_tasks()
         if self._connect_future is not None and not self._connect_future.done():
             self._connect_future.cancel()
         self._connect_future = None
@@ -696,7 +708,7 @@ class Connector:
         self._cancel_all_requests()
         await self._storage.remove_connection()
         await self._provider.close_connection()
-        self._cancel_connect_timeout()
+        self._cancel_connect_tasks()
         await self._dispatch(Event.DISCONNECT, error)
 
     async def _handle_disconnect_error(self, message: DisconnectEventError) -> None:

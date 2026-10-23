@@ -2,6 +2,7 @@ import typing as t
 
 __all__ = [
     "BadRequestError",
+    "BridgeUnreachableError",
     "FetchWalletsError",
     "ManifestContentError",
     "ManifestNotFoundError",
@@ -101,6 +102,13 @@ class FetchWalletsError(TonConnectError):
 
     default_message = "Failed to fetch wallets list."
     default_info = "An error occurred while fetching the wallets list."
+
+
+class BridgeUnreachableError(TonConnectError):
+    """No bridge opened on the first attempt of a connect."""
+
+    default_message = "No bridge is reachable."
+    default_info = "Check the network or try again later."
 
 
 class UnknownError(TonConnectError):

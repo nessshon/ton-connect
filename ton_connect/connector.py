@@ -149,7 +149,7 @@ class Connector:
             storage=self._storage,
             app_wallets=app_wallets,
             on_message=self._on_message,
-            on_error=self._on_provider_error,
+            on_error=self._on_error,
             headers=headers,
         )
 
@@ -449,13 +449,9 @@ class Connector:
 
     def drop_connect(self) -> None:
         """Cancel the pending connect request; ``wait_connect`` gets ``(None, TonConnectError)``."""
-        future = self._connect_future
-        if future is None:
+        if self._connect_future is None:
             return
-        self._connect_future = None
-        self._cancel_connect_tasks()
-        if not future.done():
-            future.set_result((None, TonConnectError("Request cancelled")))
+        self._cancel_connect()
         if not self.connected:
             with suppress(RuntimeError):
                 self._drop_task = asyncio.get_running_loop().create_task(self._drop_pending(self._provider.session_id))
@@ -529,9 +525,7 @@ class Connector:
             await handler(self, *args)
         except Exception as error:
             if event is not Event.ERROR:
-                if not isinstance(error, TonConnectError):
-                    error = TonConnectError(str(error))
-                await self._dispatch(Event.ERROR, error)
+                await self._on_error(error)
             else:
                 logger.exception("Event.ERROR handler failed")
 
@@ -655,10 +649,12 @@ class Connector:
             self._run_request_timeout(request_id, timeout),
         )
 
-    async def _on_provider_error(self, error: Exception) -> None:
-        """Handle provider-level errors."""
+    async def _on_error(self, error: Exception) -> None:
+        """Dispatch a provider or event handler error as ``Event.ERROR``, wrapped in ``TonConnectError``."""
         if not isinstance(error, TonConnectError):
-            error = TonConnectError(str(error))
+            wrapped = TonConnectError(str(error))
+            wrapped.__cause__ = error
+            error = wrapped
         await self._dispatch(Event.ERROR, error)
 
     async def _on_message(self, message: WalletMessage) -> None:

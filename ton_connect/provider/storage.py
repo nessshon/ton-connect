@@ -6,7 +6,7 @@ from contextlib import suppress
 
 from pydantic import TypeAdapter, ValidationError
 
-from ..exceptions import TonConnectError
+from ..exceptions import TonConnectError, WalletNotConnectedError
 from ..models.connection import (
     ActiveConnection,
     Connection,
@@ -123,12 +123,12 @@ class ProviderStorage:
         """Return the next RPC request ID and advance the counter under one lock.
 
         :return: Request ID to use.
-        :raises TonConnectError: If no active connection is stored.
+        :raises WalletNotConnectedError: If no active connection is stored.
         """
         async with self._lock:
             conn = await self._get_connection()
             if not isinstance(conn, ActiveConnection):
-                raise TonConnectError("Wallet is not connected")
+                raise WalletNotConnectedError()
             request_id = int(conn.next_rpc_request_id or 0)
             conn = conn.model_copy(update={"next_rpc_request_id": request_id + 1})
             await self.store_connection(conn)

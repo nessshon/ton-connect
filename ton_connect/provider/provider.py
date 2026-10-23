@@ -4,7 +4,7 @@ from contextlib import suppress
 
 from pydantic import TypeAdapter
 
-from ..exceptions import TonConnectError
+from ..exceptions import TonConnectError, WalletNotConnectedError
 from ..models import (
     ActiveConnection,
     AppWallet,
@@ -122,11 +122,12 @@ class Provider:
 
         :param request: RPC request to send; a preset ``id`` is kept.
         :return: Assigned request ID.
-        :raises TonConnectError: If no active connection or gateway.
+        :raises WalletNotConnectedError: If no active connection is stored.
+        :raises TonConnectError: If there is no gateway or the bridge send fails.
         """
         conn = await self._storage.get_connection()
         if not isinstance(conn, ActiveConnection):
-            raise TonConnectError("Wallet is not connected")
+            raise WalletNotConnectedError()
 
         gw = self._gateway
         if gw is None:

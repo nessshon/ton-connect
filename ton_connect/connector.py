@@ -312,6 +312,8 @@ class Connector:
         """
         connect_event = await self._provider.restore_connection()
         if connect_event is None:
+            self._wallet = None
+            self._network = None
             return False
 
         wallet = Wallet.from_payload(connect_event.payload)

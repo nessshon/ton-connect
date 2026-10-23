@@ -143,6 +143,31 @@ def _generate_tg_universal_link(
     return _set_query_params(_convert_to_direct_link(universal_link), {"startapp": startapp})
 
 
+def generate_request_link(
+    universal_link: str,
+    *,
+    session_id: str,
+    redirect_url: str | None = None,
+) -> str:
+    """Generate a link that opens the wallet to confirm a request sent over the bridge.
+
+    :param universal_link: Wallet universal link base URL.
+    :param session_id: Bridge session identifier.
+    :param redirect_url: Post-request redirect URL, or ``None``.
+    :return: Ready-to-use link.
+    """
+    params = {"id": session_id}
+    if redirect_url is not None:
+        params["ret"] = redirect_url
+    if not is_telegram_url(universal_link):
+        return _set_query_params(universal_link, params)
+
+    direct = _convert_to_direct_link(universal_link)
+    startapp = dict(parse_qsl(urlsplit(direct).query)).get("startapp", "tonconnect")
+    startapp += "-v__2-" + encode_telegram_url_parameters(urlencode(params))
+    return _set_query_params(direct, {"startapp": startapp})
+
+
 def _set_query_params(url: str, params: dict[str, str]) -> str:
     """Set query parameters on a URL, keeping the bare ``tc://`` form."""
     split = urlsplit(url)

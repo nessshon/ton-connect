@@ -4,6 +4,7 @@ from .link import (
     add_path_to_url,
     decode_telegram_url_parameters,
     encode_telegram_url_parameters,
+    generate_request_link,
     generate_universal_link,
     is_telegram_url,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "create_ton_proof_payload",
     "decode_telegram_url_parameters",
     "encode_telegram_url_parameters",
+    "generate_request_link",
     "generate_universal_link",
     "is_telegram_url",
     "verify_send_transaction_support",

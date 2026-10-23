@@ -47,6 +47,7 @@ from .provider import Provider
 from .provider.storage import ProviderStorage
 from .utils import (
     STANDARD_UNIVERSAL_LINK,
+    generate_request_link,
     generate_universal_link,
     verify_send_transaction_support,
     verify_sign_data_support,
@@ -219,6 +220,30 @@ class Connector:
         return generate_universal_link(
             universal_link,
             message=request,
+            session_id=self._provider.session_id,
+            redirect_url=redirect_url,
+        )
+
+    def make_request_url(
+        self,
+        app_wallet: AppWallet | None = None,
+        redirect_url: str | None = None,
+    ) -> str | None:
+        """Generate a link that opens the wallet to confirm a sent request.
+
+        :param app_wallet: Wallet descriptor, or ``None`` for the connected wallet.
+        :param redirect_url: Post-request redirect URL, or ``None``.
+        :return: Link to the wallet, or ``None`` if the wallet has no universal link.
+        :raises WalletNotConnectedError: If no wallet is connected.
+        """
+        if not self.connected:
+            raise WalletNotConnectedError()
+        app_wallet = app_wallet or self.app_wallet
+        if app_wallet is None or not app_wallet.universal_url:
+            return None
+
+        return generate_request_link(
+            app_wallet.universal_url,
             session_id=self._provider.session_id,
             redirect_url=redirect_url,
         )

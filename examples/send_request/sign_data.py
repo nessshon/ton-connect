@@ -117,6 +117,9 @@ async def main() -> None:
     request_id = await connector.sign_data(payload)
     print("Sign request sent, waiting for confirmation...")
 
+    # Link that brings the user to the connected wallet to confirm; None if the wallet has no universal link
+    print(f"Open wallet: {connector.make_request_url()}")
+
     # Block until the wallet signs the data (or rejects/times out)
     # Returns (result, None) on success, (None, error) on rejection or timeout
     result, error = await connector.wait_sign_data(request_id)

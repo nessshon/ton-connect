@@ -114,23 +114,10 @@ def _generate_regular_universal_link(
     redirect_url: str | None = None,
 ) -> str:
     """Generate a regular (non-Telegram) universal link."""
-    split = urlsplit(universal_link)
-    q = dict(parse_qsl(split.query, keep_blank_values=True))
-
-    q["v"] = protocol_version
-    q["id"] = session_id
-    q["r"] = message.dump_json(exclude_none=True)
+    params = {"v": protocol_version, "id": session_id, "r": message.dump_json(exclude_none=True)}
     if redirect_url is not None:
-        q["ret"] = redirect_url
-
-    query = urlencode(q)
-
-    if universal_link == STANDARD_UNIVERSAL_LINK:
-        base = f"{split.scheme}://{split.path}"
-        return f"{base}?{query}" if query else base
-
-    comps = (split.scheme, split.netloc, split.path, query, split.fragment)
-    return urlunsplit(comps)
+        params["ret"] = redirect_url
+    return _set_query_params(universal_link, params)
 
 
 def _generate_tg_universal_link(
@@ -153,14 +140,17 @@ def _generate_tg_universal_link(
 
     startapp = "tonconnect-" + encode_telegram_url_parameters(link_params)
 
-    updated = _convert_to_direct_link(universal_link)
+    return _set_query_params(_convert_to_direct_link(universal_link), {"startapp": startapp})
 
-    split = urlsplit(updated)
-    q = dict(parse_qsl(split.query, keep_blank_values=True))
-    q["startapp"] = startapp
 
-    comps = (split.scheme, split.netloc, split.path, urlencode(q), split.fragment)
-    return urlunsplit(comps)
+def _set_query_params(url: str, params: dict[str, str]) -> str:
+    """Set query parameters on a URL, keeping the bare ``tc://`` form."""
+    split = urlsplit(url)
+    query = urlencode({**dict(parse_qsl(split.query, keep_blank_values=True)), **params})
+    if url == STANDARD_UNIVERSAL_LINK:
+        base = f"{split.scheme}://{split.path}"
+        return f"{base}?{query}" if query else base
+    return urlunsplit((split.scheme, split.netloc, split.path, query, split.fragment))
 
 
 def _convert_to_direct_link(universal_link: str) -> str:

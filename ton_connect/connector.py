@@ -330,7 +330,7 @@ class Connector:
         await self._provider.disconnect()
         self._wallet = None
         self._network = None
-        self._cancel_all_requests()
+        self._cancel_all_requests(WalletNotConnectedError())
 
     async def send_transaction(
         self,
@@ -410,12 +410,14 @@ class Connector:
         :return: `(wallet, None)` on success, `(None, error)` on failure.
         :raises TonConnectError: If no connect request is pending.
         """
-        if self._connect_future is None:
+        future = self._connect_future
+        if future is None:
             raise TonConnectError("No pending connect request")
         try:
-            return await self._connect_future
+            return await future
         finally:
-            self._connect_future = None
+            if self._connect_future is future:
+                self._connect_future = None
 
     async def wait_transaction(self, request_id: int) -> _SendTransactionResult:
         """Await a pending send transaction result.
@@ -444,33 +446,29 @@ class Connector:
         return await self._wait_request(request_id)  # type: ignore[return-value]
 
     def drop_connect(self) -> None:
-        """Cancel the pending connect request."""
+        """Cancel the pending connect request; ``wait_connect`` gets ``(None, TonConnectError)``."""
         future = self._connect_future
         if future is None:
             return
         self._connect_future = None
         self._cancel_connect_tasks()
         if not future.done():
-            future.cancel()
+            future.set_result((None, TonConnectError("Request cancelled")))
         if not self.connected:
             with suppress(RuntimeError):
                 self._drop_task = asyncio.get_running_loop().create_task(self._drop_pending(self._provider.session_id))
 
     def drop_request(self, request_id: int) -> None:
-        """Cancel a pending request by ID.
+        """Cancel a pending request by ID; its waiter gets ``(None, TonConnectError)``, no event is dispatched.
 
         :param request_id: Request ID to cancel.
         """
-        self._cancel_request_timeout(request_id)
-        self._request_events.pop(request_id, None)
-        future = self._request_futures.pop(request_id, None)
-        if future is not None and not future.done():
-            future.cancel()
+        self._drop_request(request_id, TonConnectError("Request cancelled"))
 
     async def close(self) -> None:
         """Close all bridge connections without notifying the wallet."""
         self._cancel_connect()
-        self._cancel_all_requests()
+        self._cancel_all_requests(TonConnectError("Request cancelled"))
         await self._provider.close_connection()
         if self._on_close is not None:
             self._on_close()
@@ -606,7 +604,7 @@ class Connector:
         """Cancel the pending connect future and its tasks."""
         self._cancel_connect_tasks()
         if self._connect_future is not None and not self._connect_future.done():
-            self._connect_future.cancel()
+            self._connect_future.set_result((None, TonConnectError("Request cancelled")))
         self._connect_future = None
 
     def _cancel_request_timeout(self, request_id: int) -> None:
@@ -615,10 +613,18 @@ class Connector:
         if task is not None:
             task.cancel()
 
-    def _cancel_all_requests(self) -> None:
-        """Cancel all pending request futures and timeouts."""
+    def _drop_request(self, request_id: int, error: TonConnectError) -> None:
+        """Forget a pending request; its waiter gets ``(None, error)``, no event is dispatched."""
+        self._cancel_request_timeout(request_id)
+        self._request_events.pop(request_id, None)
+        future = self._request_futures.pop(request_id, None)
+        if future is not None and not future.done():
+            future.set_result((None, error))
+
+    def _cancel_all_requests(self, error: TonConnectError) -> None:
+        """Resolve all pending requests with *error* and cancel their timeouts."""
         for request_id in list(self._request_futures):
-            self.drop_request(request_id)
+            self._drop_request(request_id, error)
 
     def resume_connect(self, timeout: float) -> None:
         """Resume waiting for a pending connect after restart.
@@ -705,7 +711,7 @@ class Connector:
     async def _drop_session(self, error: TonConnectError | None) -> None:
         """Forget the wallet session and dispatch the disconnect event."""
         self._wallet = None
-        self._cancel_all_requests()
+        self._cancel_all_requests(WalletNotConnectedError())
         await self._storage.remove_connection()
         await self._provider.close_connection()
         self._cancel_connect_tasks()

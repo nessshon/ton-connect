@@ -689,8 +689,7 @@ class Connector:
             if self._network is not None:
                 verify_wallet_network(wallet, self._network)
         except TonConnectError as err:
-            await self._storage.remove_connection()
-            await self._provider.close_connection()
+            await self._provider.disconnect()
             await self._emit_connect(err)
             return
 

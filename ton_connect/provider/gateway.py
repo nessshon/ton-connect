@@ -18,38 +18,7 @@ from .source import (
 )
 from .storage import ProviderStorage
 
-_T = t.TypeVar("_T")
-
 logger = logging.getLogger(__name__)
-
-
-async def retry_until_success(
-    fn: t.Callable[[], t.Awaitable[_T]],
-    *,
-    attempts: int = 10,
-    delay: float = 0.2,
-) -> _T:
-    """Retry an async callable until it succeeds.
-
-    :param fn: Async callable to retry.
-    :param attempts: Maximum number of attempts.
-    :param delay: Delay between attempts in seconds.
-    :return: Result of *fn*.
-    :raises Exception: Last exception if all attempts fail; cancellation is never retried.
-    """
-    last_error: Exception | None = None
-
-    for i in range(attempts):
-        try:
-            return await fn()
-        except Exception as exc:  # noqa: PERF203
-            last_error = exc
-            if i + 1 >= attempts:
-                break
-            await asyncio.sleep(delay)
-
-    assert last_error is not None
-    raise last_error
 
 
 class Gateway:
@@ -174,9 +143,9 @@ class Gateway:
         :param receiver: Hex-encoded wallet public key.
         :param topic: Bridge topic (RPC method name).
         :param ttl: Message time-to-live in seconds.
-        :param attempts: Retry attempts for the HTTP POST.
+        :param attempts: Attempts for the HTTP POST; only network errors, 5xx and 429 are retried.
         :param delay: Delay between retries in seconds.
-        :raises TonConnectError: If the gateway is closed or send fails.
+        :raises TonConnectError: If the gateway is closed, the bridge rejects the message or all attempts fail.
         """
         if self._closed:
             raise TonConnectError("Bridge is closed")
@@ -188,17 +157,25 @@ class Gateway:
         )
         body = base64.b64encode(message).decode()
 
-        async def _post_once() -> None:
+        error = TonConnectError("Bridge send failed")
+        for attempt in range(attempts):
+            if attempt:
+                await asyncio.sleep(delay)
             session = await self._ensure_session()
-            async with session.post(str(url), data=body) as resp:
-                if resp.status < 200 or resp.status >= 300:
-                    raise TonConnectError(f"Bridge send failed, status {resp.status}")
-
-        await retry_until_success(
-            _post_once,
-            attempts=attempts,
-            delay=delay,
-        )
+            try:
+                async with session.post(str(url), data=body) as resp:
+                    if 200 <= resp.status < 300:
+                        return
+                    error = TonConnectError(f"Bridge send failed, status {resp.status}")
+                    # The bridge answers 4xx to a message it will never take: bad params, ttl above 300, oversized body.
+                    if resp.status < 500 and resp.status != 429:
+                        raise error
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                if self._closed:
+                    raise TonConnectError("Bridge is closed") from exc
+                error = TonConnectError(f"Bridge send failed: {exc!r}")
+                error.__cause__ = exc
+        raise error
 
     async def pause(self) -> None:
         """Pause SSE listening and cancel any pending reconnect."""

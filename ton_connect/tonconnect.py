@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import typing as t
+from contextlib import suppress
 
 from .connector import Connector, Event
 from .exceptions import TonConnectError
@@ -46,6 +49,8 @@ _EventHandler: t.TypeAlias = (
 )
 _EventHandlers: t.TypeAlias = dict[Event, _EventHandler]
 
+logger = logging.getLogger(__name__)
+
 
 class TonConnect:
     """High-level TonConnect manager for multiple connector sessions."""
@@ -74,6 +79,7 @@ class TonConnect:
         self._handlers: _EventHandlers = {}
         self._context: dict[str, t.Any] = context
         self._connectors: dict[str, Connector] = {}
+        self._closing: set[asyncio.Task[None]] = set()
 
     def __getitem__(self, key: str) -> t.Any:
         """Return a context value by key."""
@@ -205,7 +211,7 @@ class TonConnect:
         session_key: str,
         **context: t.Any,
     ) -> Connector:
-        """Create a new ``Connector`` for a session.
+        """Create a new ``Connector`` for a session; a previous connector of the key is closed in background.
 
         :param session_key: Unique session key.
         :param context: Extra context values merged with the global context.
@@ -220,6 +226,7 @@ class TonConnect:
             if self._connectors.get(session_key) is connector:
                 del self._connectors[session_key]
 
+        old = self._connectors.get(session_key)
         connector = Connector(
             storage=provider_storage,
             session_key=session_key,
@@ -231,6 +238,12 @@ class TonConnect:
             on_close=forget,
         )
         self._connectors[session_key] = connector
+        if old is not None:
+            # Outside a running loop the old connector has no open bridge to close.
+            with suppress(RuntimeError):
+                task = asyncio.get_running_loop().create_task(old.close())
+                self._closing.add(task)
+                task.add_done_callback(self._on_closed)
         return connector
 
     async def from_connection(
@@ -256,3 +269,10 @@ class TonConnect:
         for connector in list(self._connectors.values()):
             await connector.close()
         self._connectors.clear()
+        await asyncio.gather(*self._closing, return_exceptions=True)
+
+    def _on_closed(self, task: asyncio.Task[None]) -> None:
+        """Forget a background close and log its failure."""
+        self._closing.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("Closing a replaced connector failed", exc_info=task.exception())

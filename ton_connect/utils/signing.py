@@ -276,7 +276,7 @@ class _BaseVerify(abc.ABC, t.Generic[_TDTO]):
                 wallet_data = data_model.deserialize(cs, v5_network)
             else:
                 wallet_data = data_model.deserialize(cs)
-            return t.cast("PublicKey", wallet_data.public_key)
+            return wallet_data.public_key
 
         return None
 

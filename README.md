@@ -44,7 +44,7 @@ pip install ton-connect
 
 **Send Request**
 
-- [Send Transaction](https://github.com/nessshon/ton-connect/blob/main/examples/send_request/transaction.py)
+- [Send Transaction](https://github.com/nessshon/ton-connect/blob/main/examples/send_request/send_transaction.py)
 - [Sign Message (gasless via Tonapi)](https://github.com/nessshon/ton-connect/blob/main/examples/send_request/sign_message.py)
 - [Sign Data](https://github.com/nessshon/ton-connect/blob/main/examples/send_request/sign_data.py)
 

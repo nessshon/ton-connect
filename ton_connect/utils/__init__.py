@@ -17,6 +17,7 @@ from .signing import (
 from .validation import (
     verify_send_transaction_support,
     verify_sign_data_support,
+    verify_sign_message_support,
     verify_wallet_features,
     verify_wallet_network,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "is_telegram_url",
     "verify_send_transaction_support",
     "verify_sign_data_support",
+    "verify_sign_message_support",
     "verify_ton_proof_payload",
     "verify_wallet_features",
     "verify_wallet_network",

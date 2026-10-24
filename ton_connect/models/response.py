@@ -169,6 +169,20 @@ class SendTransactionResult(RootModel[str]):
         return normalize_hash(msg)
 
 
+class SignMessageResult(BaseModel):
+    """Result of a ``signMessage`` RPC call."""
+
+    internal_boc: str = A("internalBoc")
+    """Base64-encoded BOC of the signed internal message, for a relayer to submit."""
+
+    def to_cell(self) -> Cell:
+        """Deserialize the BOC to a ``Cell``.
+
+        :return: Parsed ``Cell``.
+        """
+        return Cell.one_from_boc(self.internal_boc)
+
+
 class RpcResponseSuccessBase(RpcBase):
     """Base for successful RPC responses."""
 
@@ -195,6 +209,13 @@ class SendTransactionRpcResponseSuccess(RpcResponseSuccessBase):
     """Transaction result."""
 
 
+class SignMessageRpcResponseSuccess(RpcResponseSuccessBase):
+    """Successful ``signMessage`` RPC response."""
+
+    result: SignMessageResult
+    """Sign message result."""
+
+
 class DisconnectRpcResponseSuccess(RpcResponseSuccessBase):
     """Successful ``disconnect`` RPC response."""
 
@@ -209,8 +230,12 @@ class SignDataRpcResponseSuccess(RpcResponseSuccessBase):
     """Sign data result."""
 
 
+# Disconnect goes last: before pydantic 2.8 its ``result: dict`` takes the ``signMessage`` result.
 WalletResponseSuccess: t.TypeAlias = (
-    SendTransactionRpcResponseSuccess | SignDataRpcResponseSuccess | DisconnectRpcResponseSuccess
+    SendTransactionRpcResponseSuccess
+    | SignMessageRpcResponseSuccess
+    | SignDataRpcResponseSuccess
+    | DisconnectRpcResponseSuccess
 )
 
 WalletResponse: t.TypeAlias = WalletResponseError | WalletResponseSuccess

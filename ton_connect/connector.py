@@ -37,6 +37,9 @@ from .models import (
     SignDataResult,
     SignDataRpcRequest,
     SignDataRpcResponseSuccess,
+    SignMessageResult,
+    SignMessageRpcRequest,
+    SignMessageRpcResponseSuccess,
     TonAddressItem,
     TonProofItem,
     Wallet,
@@ -52,6 +55,7 @@ from .utils import (
     generate_universal_link,
     verify_send_transaction_support,
     verify_sign_data_support,
+    verify_sign_message_support,
     verify_wallet_features,
     verify_wallet_network,
 )
@@ -64,11 +68,15 @@ _SendTransactionResult = tuple[
     SendTransactionResult | None,
     TonConnectError | None,
 ]
+_SignMessageResult = tuple[
+    SignMessageResult | None,
+    TonConnectError | None,
+]
 _SignDataResult = tuple[
     SignDataResult | None,
     TonConnectError | None,
 ]
-_RequestResult = _SendTransactionResult | _SignDataResult
+_RequestResult = _SendTransactionResult | _SignMessageResult | _SignDataResult
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +90,8 @@ class Event(str, Enum):
     """Wallet disconnection result."""
     TRANSACTION = "transaction"
     """Send transaction result."""
+    SIGN_MESSAGE = "sign_message"
+    """Sign message result."""
     SIGN_DATA = "sign_data"
     """Sign data result."""
     MESSAGE = "message"
@@ -92,6 +102,7 @@ class Event(str, Enum):
 
 _RESPONSE_TYPES: dict[Event | None, type[WalletResponseSuccess]] = {
     Event.TRANSACTION: SendTransactionRpcResponseSuccess,
+    Event.SIGN_MESSAGE: SignMessageRpcResponseSuccess,
     Event.SIGN_DATA: SignDataRpcResponseSuccess,
 }
 
@@ -356,21 +367,36 @@ class Connector:
                 has_extra_currency=has_extra,
             )
 
-        if self._network is not None and payload.network is None:
-            payload = payload.model_copy(update={"network": self._network})
-        if self.account is not None and payload.from_address is None:
-            payload = payload.model_copy(update={"from_address": self.account.address})
-        if self._wallet is not None and payload.network is not None:
-            verify_wallet_network(self._wallet, payload.network)
-
-        if timeout is None and payload.valid_until is not None:
-            timeout = max(payload.valid_until - int(time.time()), 0) + self.VALID_UNTIL_GRACE
-        if timeout is None:
-            timeout = self.DEFAULT_REQUEST_TIMEOUT  # type: ignore[unreachable]
-
+        payload, timeout = self._prepare_transaction(payload, timeout)
         return await self._send_request(
             SendTransactionRpcRequest(params=[payload]),
             Event.TRANSACTION,
+            timeout,
+        )
+
+    async def sign_message(
+        self,
+        payload: SendTransactionPayload,
+        timeout: float | None = None,
+    ) -> int:
+        """Request the wallet to sign a transaction without sending it, for a relayer to submit (gasless).
+
+        :param payload: Transaction payload.
+        :param timeout: Request timeout in seconds; ``None`` waits until ``valid_until`` plus ``VALID_UNTIL_GRACE``.
+        :return: Request ID for ``wait_sign_message``.
+        :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
+        """
+        if self._wallet is not None:
+            verify_sign_message_support(
+                self._wallet,
+                len(payload.messages),
+                has_extra_currency=any(m.extra_currency is not None for m in payload.messages),
+            )
+
+        payload, timeout = self._prepare_transaction(payload, timeout)
+        return await self._send_request(
+            SignMessageRpcRequest(params=[payload]),
+            Event.SIGN_MESSAGE,
             timeout,
         )
 
@@ -432,6 +458,19 @@ class Connector:
         event = self._request_events.get(request_id)
         if event is not Event.TRANSACTION:
             raise TonConnectError(f"Request {request_id} is not a pending transaction")
+        return await self._wait_request(request_id)  # type: ignore[return-value]
+
+    async def wait_sign_message(self, request_id: int) -> _SignMessageResult:
+        """Await a pending sign message result.
+
+        :param request_id: Request ID from ``sign_message``.
+        :return: `(result, None)` on success, `(None, error)` on failure.
+            A reply that arrived before this call is kept until the request timeout.
+        :raises TonConnectError: If request ID is unknown or not sign_message.
+        """
+        event = self._request_events.get(request_id)
+        if event is not Event.SIGN_MESSAGE:
+            raise TonConnectError(f"Request {request_id} is not a pending sign_message")
         return await self._wait_request(request_id)  # type: ignore[return-value]
 
     async def wait_sign_data(self, request_id: int) -> _SignDataResult:
@@ -528,6 +567,25 @@ class Connector:
                 await self._on_error(error)
             else:
                 logger.exception("Event.ERROR handler failed")
+
+    def _prepare_transaction(
+        self,
+        payload: SendTransactionPayload,
+        timeout: float | None,
+    ) -> tuple[SendTransactionPayload, float]:
+        """Fill ``network`` and ``from`` from the connected account, check the network and resolve the timeout."""
+        if self._network is not None and payload.network is None:
+            payload = payload.model_copy(update={"network": self._network})
+        if self.account is not None and payload.from_address is None:
+            payload = payload.model_copy(update={"from_address": self.account.address})
+        if self._wallet is not None and payload.network is not None:
+            verify_wallet_network(self._wallet, payload.network)
+
+        if timeout is None and payload.valid_until is not None:
+            timeout = max(payload.valid_until - int(time.time()), 0) + self.VALID_UNTIL_GRACE
+        if timeout is None:
+            timeout = self.DEFAULT_REQUEST_TIMEOUT  # type: ignore[unreachable]
+        return payload, timeout
 
     async def _send_request(
         self,
@@ -638,7 +696,7 @@ class Connector:
         """Resume waiting for a pending RPC request after restart.
 
         :param request_id: The original RPC request ID.
-        :param event: Event type (``Event.TRANSACTION`` or ``Event.SIGN_DATA``).
+        :param event: Event type (``Event.TRANSACTION``, ``Event.SIGN_MESSAGE`` or ``Event.SIGN_DATA``).
         :param timeout: Remaining timeout in seconds.
         """
         self._cancel_request_timeout(request_id)

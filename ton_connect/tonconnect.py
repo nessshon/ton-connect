@@ -12,6 +12,7 @@ from .models import (
     AppWallet,
     SendTransactionResult,
     SignDataResult,
+    SignMessageResult,
     WalletMessage,
 )
 from .provider.storage import ProviderStorage
@@ -31,6 +32,10 @@ _TransactionHandler: t.TypeAlias = t.Callable[
     [Connector, int, SendTransactionResult | None, TonConnectError | None],
     t.Awaitable[None],
 ]
+_SignMessageHandler: t.TypeAlias = t.Callable[
+    [Connector, int, SignMessageResult | None, TonConnectError | None],
+    t.Awaitable[None],
+]
 _SignDataHandler: t.TypeAlias = t.Callable[
     [Connector, int, SignDataResult | None, TonConnectError | None],
     t.Awaitable[None],
@@ -45,7 +50,13 @@ _ErrorHandler: t.TypeAlias = t.Callable[
 ]
 
 _EventHandler: t.TypeAlias = (
-    _ConnectHandler | _DisconnectHandler | _ErrorHandler | _TransactionHandler | _SignDataHandler | _MessageHandler
+    _ConnectHandler
+    | _DisconnectHandler
+    | _ErrorHandler
+    | _TransactionHandler
+    | _SignMessageHandler
+    | _SignDataHandler
+    | _MessageHandler
 )
 _EventHandlers: t.TypeAlias = dict[Event, _EventHandler]
 
@@ -118,6 +129,13 @@ class TonConnect:
     @t.overload
     def register(
         self,
+        event: t.Literal[Event.SIGN_MESSAGE],
+        handler: _SignMessageHandler,
+    ) -> _SignMessageHandler: ...
+
+    @t.overload
+    def register(
+        self,
         event: t.Literal[Event.SIGN_DATA],
         handler: _SignDataHandler,
     ) -> _SignDataHandler: ...
@@ -167,6 +185,12 @@ class TonConnect:
         self,
         event: t.Literal[Event.TRANSACTION],
     ) -> t.Callable[[_TransactionHandler], _TransactionHandler]: ...
+
+    @t.overload
+    def on(
+        self,
+        event: t.Literal[Event.SIGN_MESSAGE],
+    ) -> t.Callable[[_SignMessageHandler], _SignMessageHandler]: ...
 
     @t.overload
     def on(

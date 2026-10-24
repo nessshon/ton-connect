@@ -109,6 +109,17 @@ class SendTransactionRpcRequest(RpcRequestWithParams[SendTransactionPayload]):
     """Transaction payloads."""
 
 
+class SignMessageRpcRequest(RpcRequestWithParams[SendTransactionPayload]):
+    """RPC request to sign a transaction without sending it."""
+
+    _params_adapter = SendTransactionRpcRequest._params_adapter
+
+    method: t.Literal["signMessage"] = "signMessage"
+    """RPC method literal."""
+    params: list[SendTransactionPayload]
+    """Transaction payloads."""
+
+
 class SignDataRpcRequest(RpcRequestWithParams[SignDataPayload]):
     """RPC request to sign data."""
 
@@ -121,7 +132,7 @@ class SignDataRpcRequest(RpcRequestWithParams[SignDataPayload]):
 
 
 RpcRequests: t.TypeAlias = t.Annotated[
-    DisconnectRpcRequest | SendTransactionRpcRequest | SignDataRpcRequest,
+    DisconnectRpcRequest | SendTransactionRpcRequest | SignMessageRpcRequest | SignDataRpcRequest,
     Field(discriminator="method"),
 ]
 

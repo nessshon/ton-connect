@@ -18,7 +18,7 @@ from ._types import (
 
 
 class SendTransactionMessage(BaseModel):
-    """Single outgoing message within a ``sendTransaction`` request."""
+    """Single outgoing message within a ``sendTransaction`` or ``signMessage`` request."""
 
     address: TonAddress
     """Destination address, sent with its own bounce flag (raw form is non-bounceable); use ``EQ…`` for contracts."""
@@ -51,7 +51,7 @@ class SendTransactionMessage(BaseModel):
 
 
 class SendTransactionPayload(BaseModel):
-    """Payload for a ``sendTransaction`` RPC request."""
+    """Payload for a ``sendTransaction`` or ``signMessage`` RPC request."""
 
     network: OptionalChainId = None
     """Target network, or ``None``."""

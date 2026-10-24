@@ -20,6 +20,7 @@ Wallet connections, transactions, data signing, and proof verification for TON.
 
 - **Wallet Connection** — connect and manage wallet sessions
 - **Send Transaction** — sign, send, and handle errors
+- **Sign Message** — sign without sending, for gasless relays
 - **Sign Data** — text, binary, and cell payloads
 - **TON Proof** — wallet ownership verification
 - **Storage** — file, memory, or custom backend
@@ -44,6 +45,7 @@ pip install ton-connect
 **Send Request**
 
 - [Send Transaction](https://github.com/nessshon/ton-connect/blob/main/examples/send_request/transaction.py)
+- [Sign Message (gasless via Tonapi)](https://github.com/nessshon/ton-connect/blob/main/examples/send_request/sign_message.py)
 - [Sign Data](https://github.com/nessshon/ton-connect/blob/main/examples/send_request/sign_data.py)
 
 **Verification**

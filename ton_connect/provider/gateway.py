@@ -65,6 +65,7 @@ class Gateway:
         self._connect_lock = asyncio.Lock()
         self._reconnect_task: asyncio.Task[None] | None = None
         self._reconnect_attempts = 0
+        self._rejected: aiohttp.ClientResponseError | None = None
 
         self._closed = False
         self._paused = False
@@ -121,10 +122,15 @@ class Gateway:
             )
             self._event_source = es
 
+            self._rejected = None
             try:
                 await es.open(timeout)
-            except BaseException:
+            except BaseException as exc:
                 await self._close_event_source()
+                # A 4xx, like the Cloudflare or Akamai 403 in front of some bridges, answers every retry the same;
+                # 429 is the bridge limit of streams per IP and frees up.
+                if isinstance(exc, aiohttp.ClientResponseError) and exc.status < 500 and exc.status != 429:
+                    self._rejected = exc
                 raise
 
     async def send(
@@ -216,7 +222,8 @@ class Gateway:
     async def reconnect(self) -> None:
         """Schedule a background reconnect within the attempt budget.
 
-        Does nothing if the gateway is closed, paused or already reconnecting.
+        Does nothing if the gateway is closed, paused or already reconnecting. A stream the bridge rejected with
+        4xx other than 429 is not retried: the gateway reports it once.
         """
         if self._closed or self._paused:
             return
@@ -228,7 +235,7 @@ class Gateway:
         async def _runner() -> None:
             await self._close_event_source()
             last_error: Exception | None = None
-            while self._reconnect_attempts < self.RECONNECT_ATTEMPTS:
+            while self._rejected is None and self._reconnect_attempts < self.RECONNECT_ATTEMPTS:
                 self._reconnect_attempts += 1
                 await asyncio.sleep(self.RECONNECT_DELAY * random.uniform(0.5, 1.5))
                 if self._closed or self._paused:
@@ -241,16 +248,14 @@ class Gateway:
 
             if self._closed or self._paused:
                 return
-            reason = last_error or "stream closed without events"
-            logger.warning(
-                "Bridge %s: reconnect failed after %s attempts: %s",
-                self._bridge_url,
-                self.RECONNECT_ATTEMPTS,
-                reason,
-            )
+            if self._rejected is not None:
+                message = f"Bridge rejected the stream: {self._rejected}"
+            else:
+                reason = last_error or "stream closed without events"
+                message = f"Bridge reconnect failed after {self.RECONNECT_ATTEMPTS} attempts: {reason}"
+            logger.warning("%s: %s", self._bridge_url, message)
             with suppress(Exception):
-                err = TonConnectError(f"Bridge reconnect failed after {self.RECONNECT_ATTEMPTS} attempts: {reason}")
-                await self._on_gateway_error(err)
+                await self._on_gateway_error(TonConnectError(message))
 
         task = asyncio.create_task(_runner())
         self._reconnect_task = task

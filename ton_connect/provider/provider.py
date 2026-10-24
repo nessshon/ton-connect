@@ -4,7 +4,7 @@ from contextlib import suppress
 
 from pydantic import TypeAdapter
 
-from ..exceptions import TonConnectError, WalletNotConnectedError
+from ..exceptions import BridgeUnreachableError, TonConnectError, WalletNotConnectedError
 from ..models import (
     ActiveConnection,
     AppWallet,
@@ -123,7 +123,8 @@ class Provider:
         :param request: RPC request to send; a preset ``id`` is kept.
         :return: Assigned request ID.
         :raises WalletNotConnectedError: If no active connection is stored.
-        :raises TonConnectError: If there is no gateway or the bridge send fails.
+        :raises BridgeUnreachableError: If the bridge stream does not open or the send runs out of attempts.
+        :raises TonConnectError: If there is no gateway or the bridge rejects the message.
         """
         conn = await self._storage.get_connection()
         if not isinstance(conn, ActiveConnection):
@@ -136,7 +137,7 @@ class Provider:
             try:
                 await gw.register_session()
             except Exception as e:
-                raise TonConnectError(f"Bridge is unreachable: {e}") from e
+                raise BridgeUnreachableError(f"Bridge is unreachable: {e}") from e
 
         if request.id is None:
             request.id = str(await self._storage.take_next_rpc_request_id())

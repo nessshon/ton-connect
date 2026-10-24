@@ -105,7 +105,7 @@ class FetchWalletsError(TonConnectError):
 
 
 class BridgeUnreachableError(TonConnectError):
-    """No bridge opened on the first attempt of a connect."""
+    """Bridge does not respond: no bridge opened for a connect, the stream did not open or a send ran out of attempts."""
 
     default_message = "No bridge is reachable."
     default_info = "Check the network or try again later."

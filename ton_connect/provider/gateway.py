@@ -8,7 +8,7 @@ from contextlib import suppress
 import aiohttp
 from yarl import URL
 
-from ..exceptions import TonConnectError
+from ..exceptions import BridgeUnreachableError, TonConnectError
 from ..models import IncomingMessage
 from ..utils import add_path_to_url
 from .source import (
@@ -19,6 +19,11 @@ from .source import (
 from .storage import ProviderStorage
 
 logger = logging.getLogger(__name__)
+
+
+def _is_final(status: int) -> bool:
+    """Whether a bridge error *status* repeats on retry: any below 500 but 429, the bridge limit that frees up."""
+    return status < 500 and status != 429
 
 
 class Gateway:
@@ -129,9 +134,8 @@ class Gateway:
                 await es.open(timeout)
             except BaseException as exc:
                 await self._close_event_source()
-                # A 4xx, like the Cloudflare or Akamai 403 in front of some bridges, answers every retry the same;
-                # 429 is the bridge limit of streams per IP and frees up.
-                if isinstance(exc, aiohttp.ClientResponseError) and exc.status < 500 and exc.status != 429:
+                # Cloudflare or Akamai in front of some bridges answer 403 to every open from a blocked IP.
+                if isinstance(exc, aiohttp.ClientResponseError) and _is_final(exc.status):
                     self._rejected = exc
                 raise
 
@@ -153,7 +157,8 @@ class Gateway:
         :param ttl: Message time-to-live in seconds.
         :param attempts: Attempts for the HTTP POST; only network errors, 5xx and 429 are retried.
         :param delay: Delay between retries in seconds.
-        :raises TonConnectError: If the gateway is closed, the bridge rejects the message or all attempts fail.
+        :raises BridgeUnreachableError: If all attempts fail.
+        :raises TonConnectError: If the gateway is closed or the bridge rejects the message.
         """
         if self._closed:
             raise TonConnectError("Bridge is closed")
@@ -174,14 +179,14 @@ class Gateway:
                 async with session.post(str(url), data=body) as resp:
                     if 200 <= resp.status < 300:
                         return
-                    error = TonConnectError(f"Bridge send failed, status {resp.status}")
                     # The bridge answers 4xx to a message it will never take: bad params, ttl above 300, oversized body.
-                    if resp.status < 500 and resp.status != 429:
-                        raise error
+                    if _is_final(resp.status):
+                        raise TonConnectError(f"Bridge send failed, status {resp.status}")
+                    error = BridgeUnreachableError(f"Bridge send failed, status {resp.status}")
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if self._closed:
                     raise TonConnectError("Bridge is closed") from exc
-                error = TonConnectError(f"Bridge send failed: {exc!r}")
+                error = BridgeUnreachableError(f"Bridge send failed: {exc!r}")
                 error.__cause__ = exc
         raise error
 

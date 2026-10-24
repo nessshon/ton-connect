@@ -28,8 +28,10 @@ class Gateway:
     POST_PATH = "message"
     HEARTBEAT_MESSAGE = "heartbeat"
 
-    RECONNECT_ATTEMPTS: int = 150
+    # Mean total pause 1 + 2 + 4 + 8 + 19 * 15 = 300 s: a reply lives in the bridge queue no longer (ttl <= 300).
+    RECONNECT_ATTEMPTS: int = 23
     RECONNECT_DELAY: float = 2.0
+    RECONNECT_CAP: float = 30.0
     SSE_READ_TIMEOUT: float = 90.0
 
     def __init__(
@@ -236,8 +238,10 @@ class Gateway:
             await self._close_event_source()
             last_error: Exception | None = None
             while self._rejected is None and self._reconnect_attempts < self.RECONNECT_ATTEMPTS:
+                # Full jitter spreads the reconnects of many sessions cut off by one bridge restart.
+                delay = min(self.RECONNECT_CAP, self.RECONNECT_DELAY * 2**self._reconnect_attempts)
                 self._reconnect_attempts += 1
-                await asyncio.sleep(self.RECONNECT_DELAY * random.uniform(0.5, 1.5))
+                await asyncio.sleep(random.uniform(0, delay))
                 if self._closed or self._paused:
                     return
                 try:

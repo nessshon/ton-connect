@@ -47,7 +47,7 @@ async def main() -> None:
     else:
         # Build a connect request with only the address item (no TonProof)
         # Use make_connect_request(ton_proof_payload=...) to also request ownership proof
-        request = connector.make_connect_request()
+        request = connector.make_connect_request(network=NetworkGlobalID.TESTNET)
 
         # Initiate connection and get the standard tc:// universal link
         # network:  expected network — rejects wallets connected to a different chain

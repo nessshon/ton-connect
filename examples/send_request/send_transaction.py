@@ -55,7 +55,7 @@ async def main() -> None:
     restored = await connector.restore()
 
     if not restored:
-        request = connector.make_connect_request()
+        request = connector.make_connect_request(network=NetworkGlobalID.TESTNET)
 
         # Initiate connection and get the standard tc:// universal link
         # network:  expected network — rejects wallets connected to a different chain

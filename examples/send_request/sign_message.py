@@ -74,7 +74,7 @@ async def main() -> None:
         restored = await connector.restore()
 
         if not restored:
-            request = connector.make_connect_request()
+            request = connector.make_connect_request(network=NetworkGlobalID.MAINNET)
 
             # Initiate connection and get the standard tc:// universal link
             # network:  expected network — USD₮ and the relay live on mainnet

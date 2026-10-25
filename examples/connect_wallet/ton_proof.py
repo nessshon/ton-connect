@@ -90,7 +90,7 @@ async def main() -> None:
 
     # Step 2: Include the payload in the connect request
     # This instructs the wallet to return a signed TonProof alongside the address
-    request = connector.make_connect_request(ton_proof_payload=ton_proof_payload)
+    request = connector.make_connect_request(ton_proof_payload=ton_proof_payload, network=NetworkGlobalID.TESTNET)
 
     # Initiate connection and get the standard tc:// universal link
     # network:  expected network — rejects wallets connected to a different chain

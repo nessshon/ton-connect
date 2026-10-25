@@ -268,13 +268,15 @@ class Connector:
     def make_connect_request(
         self,
         ton_proof_payload: str | None = None,
+        network: NetworkGlobalID | None = None,
     ) -> ConnectRequest:
         """Build a ``ConnectRequest`` with standard items.
 
         :param ton_proof_payload: TON Proof challenge payload, or ``None``.
+        :param network: Network for the wallet to connect on, or ``None``.
         :return: Connect request.
         """
-        items: list[ConnectItem] = [TonAddressItem()]
+        items: list[ConnectItem] = [TonAddressItem(network=network)]
         if ton_proof_payload is not None:
             items.append(TonProofItem(payload=ton_proof_payload))
         return ConnectRequest(

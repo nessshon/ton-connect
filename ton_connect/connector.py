@@ -107,6 +107,15 @@ _RESPONSE_TYPES: dict[Event | None, type[WalletResponseSuccess]] = {
 }
 
 
+def _as_sdk_error(error: Exception) -> TonConnectError:
+    """Return *error* as ``TonConnectError``, keeping a foreign exception as ``__cause__``."""
+    if isinstance(error, TonConnectError):
+        return error
+    wrapped = TonConnectError(str(error))
+    wrapped.__cause__ = error
+    return wrapped
+
+
 class Connector:
     """TonConnect session connector managing wallet interactions."""
 
@@ -152,6 +161,7 @@ class Connector:
 
         self._request_futures: dict[int, asyncio.Future[_RequestResult]] = {}
         self._request_timeout_tasks: dict[int, asyncio.Task[None]] = {}
+        self._request_send_tasks: dict[int, asyncio.Task[None]] = {}
         self._request_events: dict[int, Event] = {}
         self._drop_task: asyncio.Task[bool] | None = None
 
@@ -353,8 +363,10 @@ class Connector:
         """Request the wallet to sign and send a transaction.
 
         :param payload: Transaction payload.
-        :param timeout: Request timeout in seconds; ``None`` waits until ``valid_until`` plus ``VALID_UNTIL_GRACE``.
-        :return: Request ID for ``wait_transaction``.
+        :param timeout: Request timeout in seconds from this call; ``None`` waits until ``valid_until`` plus
+            ``VALID_UNTIL_GRACE``.
+        :return: Request ID for ``wait_transaction``, given before the bridge has the request; a bridge failure
+            arrives there and as ``Event.TRANSACTION``.
         :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
         """
         has_extra = any(m.extra_currency is not None for m in payload.messages)
@@ -382,8 +394,10 @@ class Connector:
         """Request the wallet to sign a transaction without sending it, for a relayer to submit (gasless).
 
         :param payload: Transaction payload.
-        :param timeout: Request timeout in seconds; ``None`` waits until ``valid_until`` plus ``VALID_UNTIL_GRACE``.
-        :return: Request ID for ``wait_sign_message``.
+        :param timeout: Request timeout in seconds from this call; ``None`` waits until ``valid_until`` plus
+            ``VALID_UNTIL_GRACE``.
+        :return: Request ID for ``wait_sign_message``, given before the bridge has the request; a bridge failure
+            arrives there and as ``Event.SIGN_MESSAGE``.
         :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
         """
         if self._wallet is not None:
@@ -408,8 +422,9 @@ class Connector:
         """Request the wallet to sign arbitrary data.
 
         :param payload: Sign data payload.
-        :param timeout: Request timeout in seconds, or ``None``.
-        :return: Request ID for ``wait_sign_data``.
+        :param timeout: Request timeout in seconds from this call, or ``None``.
+        :return: Request ID for ``wait_sign_data``, given before the bridge has the request; a bridge failure
+            arrives there and as ``Event.SIGN_DATA``.
         :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
         """
         if self._wallet is not None:
@@ -593,7 +608,7 @@ class Connector:
         event: Event,
         timeout: float | None,
     ) -> int:
-        """Encrypt, send, and register a pending request."""
+        """Register a pending request and send it to the bridge in the background."""
         if not self.connected:
             raise WalletNotConnectedError()
 
@@ -601,16 +616,11 @@ class Connector:
         request.id = str(request_id)
         self._request_futures[request_id] = asyncio.get_running_loop().create_future()
         self._request_events[request_id] = event
-        try:
-            await self._provider.request(request)
-        except BaseException:
-            self.drop_request(request_id)
-            raise
-
         if timeout is not None:
             self._request_timeout_tasks[request_id] = asyncio.create_task(
                 self._run_request_timeout(request_id, timeout),
             )
+        self._request_send_tasks[request_id] = asyncio.create_task(self._run_send_request(request_id, request))
 
         return request_id
 
@@ -645,6 +655,23 @@ class Connector:
         await self._emit_request(request_id, None, RequestTimeoutError())
         self.drop_request(request_id)
 
+    async def _run_send_request(self, request_id: int, request: RpcRequestBase) -> None:
+        """Send a request to the bridge; a failure resolves the request with that error."""
+        try:
+            await self._provider.request(request)
+        except asyncio.CancelledError:
+            return
+        except Exception as error:
+            # Leave the map first: a handler of this result may drop the request, which would cancel this task.
+            self._request_send_tasks.pop(request_id, None)
+            if await self.to_connection() is None:
+                # A wallet disconnect removes the session and closes the bridge before the connector hears of it.
+                self._drop_request(request_id, WalletNotConnectedError())
+            else:
+                await self._emit_request(request_id, None, _as_sdk_error(error))
+        else:
+            self._request_send_tasks.pop(request_id, None)
+
     def _cancel_connect_tasks(self) -> None:
         """Cancel the connect timeout and first bridge opening tasks."""
         if self._connect_timeout_task is not None:
@@ -670,6 +697,9 @@ class Connector:
     def _drop_request(self, request_id: int, error: TonConnectError) -> None:
         """Forget a pending request; its waiter gets ``(None, error)``, no event is dispatched."""
         self._cancel_request_timeout(request_id)
+        task = self._request_send_tasks.pop(request_id, None)
+        if task is not None:
+            task.cancel()
         self._request_events.pop(request_id, None)
         future = self._request_futures.pop(request_id, None)
         if future is not None and not future.done():
@@ -709,11 +739,7 @@ class Connector:
 
     async def _on_error(self, error: Exception) -> None:
         """Dispatch a provider or event handler error as ``Event.ERROR``, wrapped in ``TonConnectError``."""
-        if not isinstance(error, TonConnectError):
-            wrapped = TonConnectError(str(error))
-            wrapped.__cause__ = error
-            error = wrapped
-        await self._dispatch(Event.ERROR, error)
+        await self._dispatch(Event.ERROR, _as_sdk_error(error))
 
     async def _on_message(self, message: WalletMessage) -> None:
         """Route an incoming wallet message to the appropriate handler."""

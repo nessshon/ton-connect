@@ -51,6 +51,7 @@ from .provider import Provider
 from .provider.storage import ProviderStorage
 from .utils import (
     STANDARD_UNIVERSAL_LINK,
+    find_app_wallet,
     generate_request_link,
     generate_universal_link,
     verify_send_transaction_support,
@@ -213,15 +214,8 @@ class Connector:
         bridge_url = self._provider.bridge_url
         if bridge_url is None:
             return None
-        if self._wallet is not None:
-            name = self._wallet.device.app_name.lower()
-            for w in self._app_wallets:
-                if name in (w.app_name.lower(), w.name.lower()):
-                    return w
-        for w in self._app_wallets:
-            if w.bridge_url == bridge_url:
-                return w
-        return None
+        app_name = self._wallet.device.app_name if self._wallet is not None else None
+        return find_app_wallet(self._app_wallets, app_name, bridge_url)
 
     def make_connect_url(
         self,

@@ -191,3 +191,27 @@ class AppWalletsLoader:
         if path.is_dir():
             return path / DEFAULT_WALLETS_FALLBACK_FILE
         return path
+
+
+def find_app_wallet(
+    app_wallets: list[AppWallet],
+    app_name: str | None = None,
+    bridge_url: str | None = None,
+) -> AppWallet | None:
+    """Find the descriptor of a connected wallet: by app name, else by bridge URL.
+
+    :param app_wallets: Wallet descriptors to search.
+    :param app_name: ``app_name`` from the wallet ``DeviceInfo``, or ``None``.
+    :param bridge_url: Bridge URL of the session, or ``None``.
+    :return: Wallet descriptor, or ``None`` if nothing matches.
+    """
+    if app_name is not None:
+        name = app_name.lower()
+        for w in app_wallets:
+            if name in (w.app_name.lower(), w.name.lower()):
+                return w
+    if bridge_url is not None:
+        for w in app_wallets:
+            if w.bridge_url == bridge_url:
+                return w
+    return None

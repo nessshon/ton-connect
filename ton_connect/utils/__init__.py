@@ -21,7 +21,7 @@ from .validation import (
     verify_wallet_features,
     verify_wallet_network,
 )
-from .wallets_loader import AppWalletsLoader
+from .wallets_loader import AppWalletsLoader, find_app_wallet
 
 __all__ = [
     "STANDARD_UNIVERSAL_LINK",
@@ -33,6 +33,7 @@ __all__ = [
     "create_ton_proof_payload",
     "decode_telegram_url_parameters",
     "encode_telegram_url_parameters",
+    "find_app_wallet",
     "generate_request_link",
     "generate_universal_link",
     "is_telegram_url",

@@ -704,12 +704,14 @@ class Connector:
         for request_id in list(self._request_futures):
             self._drop_request(request_id, error)
 
-    def resume_connect(self, timeout: float) -> None:
+    def resume_connect(self, timeout: float, network: NetworkGlobalID | None = None) -> None:
         """Resume waiting for a pending connect after restart.
 
         :param timeout: Remaining timeout in seconds.
+        :param network: Expected network, or ``None``.
         """
         self._cancel_connect()
+        self._network = network
         loop = asyncio.get_running_loop()
         self._connect_future = loop.create_future()
         self._connect_timeout_task = asyncio.create_task(

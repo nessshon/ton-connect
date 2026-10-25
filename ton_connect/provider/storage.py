@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 class ProviderStorage:
     """High-level storage wrapper for TonConnect provider state."""
 
-    _key_prefix = "ton-connect-storage"
+    KEY_PREFIX = "ton-connect-storage"
+    """Session keys are ``<KEY_PREFIX>::<session_key>``, a format custom ``StorageProtocol`` backends may route by."""
     _connection_adapter: t.ClassVar[TypeAdapter[Connection]] = TypeAdapter(Connection)
 
     def __init__(self, storage: StorageProtocol, session_key: str) -> None:
@@ -31,7 +32,7 @@ class ProviderStorage:
         """
         self._storage = storage
         self._lock = asyncio.Lock()
-        self._key = f"{self._key_prefix}::{session_key}"
+        self._key = f"{self.KEY_PREFIX}::{session_key}"
 
     async def _get_connection(self) -> Connection | None:
         """Load and validate connection from storage, or ``None``."""

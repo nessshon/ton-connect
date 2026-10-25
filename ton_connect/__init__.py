@@ -1,4 +1,5 @@
 from .connector import Connector, Event
+from .provider.storage import ProviderStorage
 from .storage import (
     FileStorage,
     MemoryStorage,
@@ -19,6 +20,7 @@ __all__ = [
     "Event",
     "FileStorage",
     "MemoryStorage",
+    "ProviderStorage",
     "StorageProtocol",
     "TonConnect",
     "VerifySignData",

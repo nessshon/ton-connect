@@ -779,6 +779,7 @@ class Connector:
             message.payload.code,
             message.payload.message,
         )
+        await self._drop_pending(self._provider.session_id)
         await self._emit_connect(error)
 
     async def _handle_disconnect_success(self, _: DisconnectEventSuccess) -> None:

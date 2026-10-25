@@ -82,9 +82,7 @@ async def main() -> None:
     print(f"Address: {address}")
 
     # Build the transaction payload
-    # messages:    list of outgoing messages (most wallets support up to 4)
-    # valid_until: Unix timestamp after which the transaction is rejected by the wallet
-    #              also used as the request timeout — wallet UI shows a countdown
+    # messages: list of outgoing messages (most wallets support up to 4)
     payload = SendTransactionPayload(
         messages=[
             # address: destination Address or raw string

@@ -1,5 +1,4 @@
 import base64
-import time
 import typing as t
 
 from pydantic import Field, field_serializer, field_validator
@@ -57,17 +56,15 @@ class SendTransactionPayload(BaseModel):
     """Target network, or ``None``."""
     from_address: OptionalTonAddress = A("from", default=None)
     """Sender address override, or ``None``."""
-    valid_until: int = A("valid_until", default=None, legacy="validUntil")
-    """Expiry unix timestamp."""
+    valid_until: int | None = A("valid_until", default=None, legacy="validUntil")
+    """Expiry unix timestamp, or ``None`` for ``Connector.DEFAULT_REQUEST_TIMEOUT`` from sending."""
     messages: list[SendTransactionMessage] = Field(default_factory=list)
     """Outgoing messages."""
 
     @field_validator("valid_until", mode="before")
     @classmethod
-    def _v_valid_until(cls, v: t.Any) -> int:
-        if v is None:
-            return int(time.time()) + 5 * 60
-        return int(v)
+    def _v_valid_until(cls, v: t.Any) -> int | None:
+        return int(v) if v is not None else None
 
     @field_serializer("from_address")
     def _s_from_address(self, v: Address | None) -> str | None:

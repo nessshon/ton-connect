@@ -356,7 +356,7 @@ class Connector:
     ) -> int:
         """Request the wallet to sign and send a transaction.
 
-        :param payload: Transaction payload.
+        :param payload: Transaction payload; without ``valid_until`` it expires in ``DEFAULT_REQUEST_TIMEOUT``.
         :param timeout: Request timeout in seconds from this call; ``None`` waits until ``valid_until`` plus
             ``VALID_UNTIL_GRACE``.
         :return: Request ID for ``wait_transaction``, given before the bridge has the request; a bridge failure
@@ -387,7 +387,7 @@ class Connector:
     ) -> int:
         """Request the wallet to sign a transaction without sending it, for a relayer to submit (gasless).
 
-        :param payload: Transaction payload.
+        :param payload: Transaction payload; without ``valid_until`` it expires in ``DEFAULT_REQUEST_TIMEOUT``.
         :param timeout: Request timeout in seconds from this call; ``None`` waits until ``valid_until`` plus
             ``VALID_UNTIL_GRACE``.
         :return: Request ID for ``wait_sign_message``, given before the bridge has the request; a bridge failure
@@ -582,7 +582,7 @@ class Connector:
         payload: SendTransactionPayload,
         timeout: float | None,
     ) -> tuple[SendTransactionPayload, float]:
-        """Fill ``network`` and ``from`` from the connected account, check the network and resolve the timeout."""
+        """Fill ``network``, ``from`` and a missing ``valid_until``, check the network and resolve the timeout."""
         if self._network is not None and payload.network is None:
             payload = payload.model_copy(update={"network": self._network})
         if self.account is not None and payload.from_address is None:
@@ -590,10 +590,12 @@ class Connector:
         if self._wallet is not None and payload.network is not None:
             verify_wallet_network(self._wallet, payload.network)
 
-        if timeout is None and payload.valid_until is not None:
-            timeout = max(payload.valid_until - int(time.time()), 0) + self.VALID_UNTIL_GRACE
+        valid_until = payload.valid_until
+        if valid_until is None:
+            valid_until = int(time.time() + self.DEFAULT_REQUEST_TIMEOUT)
+            payload = payload.model_copy(update={"valid_until": valid_until})
         if timeout is None:
-            timeout = self.DEFAULT_REQUEST_TIMEOUT  # type: ignore[unreachable]
+            timeout = max(valid_until - int(time.time()), 0) + self.VALID_UNTIL_GRACE
         return payload, timeout
 
     async def _send_request(

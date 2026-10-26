@@ -351,6 +351,30 @@ class Connector:
         self._network = None
         self._cancel_all_requests(WalletNotConnectedError())
 
+    def prepare_transaction(
+        self,
+        payload: SendTransactionPayload,
+        timeout: float | None = None,
+    ) -> tuple[SendTransactionPayload, float]:
+        """Check and fill a transaction request as ``send_transaction`` does, without sending it.
+
+        :param payload: Transaction payload; without ``valid_until`` it expires in ``DEFAULT_REQUEST_TIMEOUT``.
+        :param timeout: Request timeout in seconds, or ``None`` for ``valid_until`` plus ``VALID_UNTIL_GRACE``.
+        :return: Payload and timeout for ``send_transaction``.
+        :raises WalletNotConnectedError: If no wallet is connected.
+        :raises WalletNotSupportFeatureError: If the wallet cannot take this request.
+        :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
+        """
+        if self._wallet is None:
+            raise WalletNotConnectedError()
+        verify_send_transaction_support(
+            self._wallet,
+            len(payload.messages),
+            app_wallet=self.app_wallet,
+            has_extra_currency=any(m.extra_currency is not None for m in payload.messages),
+        )
+        return self._prepare_transaction(payload, timeout)
+
     async def send_transaction(
         self,
         payload: SendTransactionPayload,
@@ -363,24 +387,39 @@ class Connector:
             ``VALID_UNTIL_GRACE``.
         :return: Request ID for ``wait_transaction``, given before the bridge has the request; a bridge failure
             arrives there and as ``Event.TRANSACTION``.
+        :raises WalletNotConnectedError: If no wallet is connected.
+        :raises WalletNotSupportFeatureError: If the wallet cannot take this request.
         :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
         """
-        has_extra = any(m.extra_currency is not None for m in payload.messages)
-
-        if self._wallet is not None:
-            verify_send_transaction_support(
-                self._wallet,
-                len(payload.messages),
-                app_wallet=self.app_wallet,
-                has_extra_currency=has_extra,
-            )
-
-        payload, timeout = self._prepare_transaction(payload, timeout)
+        payload, timeout = self.prepare_transaction(payload, timeout)
         return await self._send_request(
             SendTransactionRpcRequest(params=[payload]),
             Event.TRANSACTION,
             timeout,
         )
+
+    def prepare_sign_message(
+        self,
+        payload: SendTransactionPayload,
+        timeout: float | None = None,
+    ) -> tuple[SendTransactionPayload, float]:
+        """Check and fill a sign message request as ``sign_message`` does, without sending it.
+
+        :param payload: Transaction payload; without ``valid_until`` it expires in ``DEFAULT_REQUEST_TIMEOUT``.
+        :param timeout: Request timeout in seconds, or ``None`` for ``valid_until`` plus ``VALID_UNTIL_GRACE``.
+        :return: Payload and timeout for ``sign_message``.
+        :raises WalletNotConnectedError: If no wallet is connected.
+        :raises WalletNotSupportFeatureError: If the wallet cannot take this request.
+        :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
+        """
+        if self._wallet is None:
+            raise WalletNotConnectedError()
+        verify_sign_message_support(
+            self._wallet,
+            len(payload.messages),
+            has_extra_currency=any(m.extra_currency is not None for m in payload.messages),
+        )
+        return self._prepare_transaction(payload, timeout)
 
     async def sign_message(
         self,
@@ -394,21 +433,46 @@ class Connector:
             ``VALID_UNTIL_GRACE``.
         :return: Request ID for ``wait_sign_message``, given before the bridge has the request; a bridge failure
             arrives there and as ``Event.SIGN_MESSAGE``.
+        :raises WalletNotConnectedError: If no wallet is connected.
+        :raises WalletNotSupportFeatureError: If the wallet cannot take this request.
         :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
         """
-        if self._wallet is not None:
-            verify_sign_message_support(
-                self._wallet,
-                len(payload.messages),
-                has_extra_currency=any(m.extra_currency is not None for m in payload.messages),
-            )
-
-        payload, timeout = self._prepare_transaction(payload, timeout)
+        payload, timeout = self.prepare_sign_message(payload, timeout)
         return await self._send_request(
             SignMessageRpcRequest(params=[payload]),
             Event.SIGN_MESSAGE,
             timeout,
         )
+
+    def prepare_sign_data(
+        self,
+        payload: SignDataPayload,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    ) -> tuple[SignDataPayload, float]:
+        """Check and fill a sign data request as ``sign_data`` does, without sending it.
+
+        :param payload: Sign data payload.
+        :param timeout: Request timeout in seconds.
+        :return: Payload and timeout for ``sign_data``.
+        :raises WalletNotConnectedError: If no wallet is connected.
+        :raises WalletNotSupportFeatureError: If the wallet cannot take this request.
+        :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
+        """
+        if self._wallet is None:
+            raise WalletNotConnectedError()
+        verify_sign_data_support(
+            self._wallet,
+            payload.type,
+            app_wallet=self.app_wallet,
+        )
+
+        if self._network is not None and payload.network is None:
+            payload = payload.model_copy(update={"network": self._network})
+        if self.account is not None and payload.from_address is None:
+            payload = payload.model_copy(update={"from_address": self.account.address})
+        if payload.network is not None:
+            verify_wallet_network(self._wallet, payload.network)
+        return payload, timeout
 
     async def sign_data(
         self,
@@ -418,25 +482,14 @@ class Connector:
         """Request the wallet to sign arbitrary data.
 
         :param payload: Sign data payload.
-        :param timeout: Request timeout in seconds from this call, or ``None``.
+        :param timeout: Request timeout in seconds from this call.
         :return: Request ID for ``wait_sign_data``, given before the bridge has the request; a bridge failure
             arrives there and as ``Event.SIGN_DATA``.
+        :raises WalletNotConnectedError: If no wallet is connected.
+        :raises WalletNotSupportFeatureError: If the wallet cannot take this request.
         :raises WalletWrongNetworkError: If ``payload.network`` differs from the wallet network.
         """
-        if self._wallet is not None:
-            verify_sign_data_support(
-                self._wallet,
-                payload.type,
-                app_wallet=self.app_wallet,
-            )
-
-        if self._network is not None and payload.network is None:
-            payload = payload.model_copy(update={"network": self._network})
-        if self.account is not None and payload.from_address is None:
-            payload = payload.model_copy(update={"from_address": self.account.address})
-        if self._wallet is not None and payload.network is not None:
-            verify_wallet_network(self._wallet, payload.network)
-
+        payload, timeout = self.prepare_sign_data(payload, timeout)
         return await self._send_request(
             SignDataRpcRequest(params=[payload]),
             Event.SIGN_DATA,
@@ -604,20 +657,14 @@ class Connector:
         self,
         request: RpcRequestBase,
         event: Event,
-        timeout: float | None,
+        timeout: float,
     ) -> int:
         """Register a pending request and send it to the bridge in the background."""
-        if not self.connected:
-            raise WalletNotConnectedError()
-
         request_id = await self._storage.take_next_rpc_request_id()
         request.id = str(request_id)
         self._request_futures[request_id] = asyncio.get_running_loop().create_future()
         self._request_events[request_id] = event
-        if timeout is not None:
-            self._request_timeout_tasks[request_id] = asyncio.create_task(
-                self._run_request_timeout(request_id, timeout),
-            )
+        self._request_timeout_tasks[request_id] = asyncio.create_task(self._run_request_timeout(request_id, timeout))
         self._request_send_tasks[request_id] = asyncio.create_task(self._run_send_request(request_id, request))
 
         return request_id

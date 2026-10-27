@@ -614,7 +614,10 @@ class Connector:
     ) -> None:
         """Resolve a request future once and dispatch the event; the result stays until collected or expired."""
         future = self._request_futures.get(request_id)
-        if future is None or future.done():
+        if future is None:
+            logger.debug("Answer %s matches no request for %s", request_id, self._session_key)
+            return
+        if future.done():
             return
         future.set_result((result, error))
         await self._dispatch(self._request_events[request_id], request_id, result, error)
@@ -623,6 +626,11 @@ class Connector:
         """Dispatch an event to its registered handler."""
         handler = self._handlers.get(event)
         if handler is None:
+            if event is Event.ERROR:
+                error = args[0]
+                # A bug behind the error keeps its traceback; a bridge failure stays one line.
+                cause = error if error.__cause__ is not None else None
+                logger.warning("TON Connect error for %s: %s", self._session_key, error, exc_info=cause)
             return
         try:
             await handler(self, *args)
@@ -630,7 +638,7 @@ class Connector:
             if event is not Event.ERROR:
                 await self._on_error(error)
             else:
-                logger.exception("Event.ERROR handler failed")
+                logger.exception("Event.ERROR handler failed for %s", self._session_key)
 
     def _prepare_transaction(
         self,
@@ -716,6 +724,7 @@ class Connector:
                 await self._emit_request(request_id, None, _as_sdk_error(error))
         else:
             self._request_send_tasks.pop(request_id, None)
+            logger.debug("Request %s sent for %s: %s", request_id, self._session_key, request.method)
 
     def _cancel_connect_tasks(self) -> None:
         """Cancel the connect timeout and first bridge opening tasks."""
@@ -790,6 +799,7 @@ class Connector:
 
     async def _on_message(self, message: WalletMessage) -> None:
         """Route an incoming wallet message to the appropriate handler."""
+        logger.debug("Wallet message for %s: %s %s", self._session_key, type(message).__name__, message.id)
         await self._dispatch(Event.MESSAGE, message)
 
         if isinstance(message, ConnectEventSuccess):

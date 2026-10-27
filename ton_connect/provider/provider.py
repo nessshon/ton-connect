@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import typing as t
 from contextlib import suppress
 
@@ -27,6 +28,9 @@ from .source import ReadyState
 from .storage import ProviderStorage
 
 _WALLET_MESSAGE_ADAPTER: TypeAdapter[WalletMessage] = TypeAdapter(WalletMessage)
+
+
+logger = logging.getLogger(__name__)
 
 
 class Provider:
@@ -334,8 +338,12 @@ class Provider:
         self._gateway = keep
         self._pending_gateways = []
 
-    async def _on_gateway_error(self, exc: Exception) -> None:
-        """Forward gateway errors to the error callback."""
+    async def _on_gateway_error(self, exc: Exception, bridge_url: str) -> None:
+        """Forward errors of the active gateway to the error callback."""
+        if bridge_url != self.bridge_url:
+            # A bridge of a wallet the user may never choose: its failure stops nothing.
+            logger.debug("Pending connect bridge failed for %s: %s", bridge_url, exc)
+            return
         await self._on_error(exc)
 
     async def _on_gateway_message(

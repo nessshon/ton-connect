@@ -47,7 +47,7 @@ class Gateway:
         storage: ProviderStorage,
         headers: dict[str, str] | None = None,
         on_gateway_message: t.Callable[[IncomingMessage, str], t.Awaitable[None]],
-        on_gateway_error: t.Callable[[Exception], t.Awaitable[None]],
+        on_gateway_error: t.Callable[[Exception, str], t.Awaitable[None]],
     ) -> None:
         """Initialize the gateway.
 
@@ -56,7 +56,7 @@ class Gateway:
         :param storage: Provider storage.
         :param headers: Extra HTTP headers, or ``None``.
         :param on_gateway_message: Async callback for incoming messages.
-        :param on_gateway_error: Async callback for errors.
+        :param on_gateway_error: Async callback for errors, with the bridge URL.
         """
         self._session_id = session_id
         self._bridge_url = bridge_url
@@ -246,7 +246,11 @@ class Gateway:
                 # Full jitter spreads the reconnects of many sessions cut off by one bridge restart.
                 delay = min(self.RECONNECT_CAP, self.RECONNECT_DELAY * 2**self._reconnect_attempts)
                 self._reconnect_attempts += 1
-                await asyncio.sleep(random.uniform(0, delay))
+                pause = random.uniform(0, delay)
+                logger.debug(
+                    "Reconnecting to %s, attempt %d in %.1f s", self._bridge_url, self._reconnect_attempts, pause
+                )
+                await asyncio.sleep(pause)
                 if self._closed or self._paused:
                     return
                 try:
@@ -262,9 +266,8 @@ class Gateway:
             else:
                 reason = last_error or "stream closed without events"
                 message = f"Bridge reconnect failed after {self.RECONNECT_ATTEMPTS} attempts: {reason}"
-            logger.warning("%s: %s", self._bridge_url, message)
             with suppress(Exception):
-                await self._on_gateway_error(TonConnectError(message))
+                await self._on_gateway_error(TonConnectError(message), self._bridge_url)
 
         task = asyncio.create_task(_runner())
         self._reconnect_task = task
@@ -307,7 +310,7 @@ class Gateway:
 
         if self.ready_state in (ReadyState.OPEN, ReadyState.CONNECTING):
             with suppress(Exception):
-                await self._on_gateway_error(exc)
+                await self._on_gateway_error(exc, self._bridge_url)
             return
 
         await self.reconnect()
@@ -324,15 +327,17 @@ class Gateway:
         try:
             msg = IncomingMessage.model_validate_json(e.data)
         except Exception as exc:
+            # Only at debug: the body may be long, and the error event carries the parse error.
+            logger.debug("Bridge message not parsed for %s: %s", self._bridge_url, e.data)
             with suppress(Exception):
-                err = TonConnectError(f"Bridge message parse failed, message: `{e.data}`, error: {exc}")
-                await self._on_gateway_error(err)
+                err = TonConnectError(f"Bridge message parse failed: {exc}")
+                await self._on_gateway_error(err, self._bridge_url)
         else:
             try:
                 await self._on_gateway_message(msg, self._bridge_url)
             except Exception as exc:
                 with suppress(Exception):
-                    await self._on_gateway_error(exc)
+                    await self._on_gateway_error(exc, self._bridge_url)
 
         if e.event_id:
             await self._storage.store_last_event_id(e.event_id)

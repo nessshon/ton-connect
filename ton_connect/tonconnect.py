@@ -265,7 +265,7 @@ class TonConnect:
         if old is not None:
             # Outside a running loop the old connector has no open bridge to close.
             with suppress(RuntimeError):
-                task = asyncio.get_running_loop().create_task(old.close())
+                task = asyncio.get_running_loop().create_task(old.close(), name=session_key)
                 self._closing.add(task)
                 task.add_done_callback(self._on_closed)
         return connector
@@ -299,4 +299,4 @@ class TonConnect:
         """Forget a background close and log its failure."""
         self._closing.discard(task)
         if not task.cancelled() and task.exception() is not None:
-            logger.error("Closing a replaced connector failed", exc_info=task.exception())
+            logger.error("Closing a replaced connector failed for %s", task.get_name(), exc_info=task.exception())

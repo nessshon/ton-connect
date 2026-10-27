@@ -70,11 +70,14 @@ class AppWalletsLoader:
         if self._cache is not None and not self._expired():
             return self._cache
 
-        raw = self._fetch_remote()
-        if raw is None:
+        try:
+            raw = self._fetch_remote()
+        except Exception as error:
             raw = self._load_fallback()
-        if raw is None:
-            raise FetchWalletsError("Wallets catalog unavailable")
+            if raw is None:
+                raise FetchWalletsError("Wallets catalog unavailable") from error
+            # The fallback file may be stale.
+            logger.warning("Fetching the wallets catalog from %s failed, using %s: %s", self._source, self._path, error)
 
         wallets = self._process(raw)
 
@@ -146,14 +149,11 @@ class AppWalletsLoader:
         wallets.sort(key=lambda w: order_map.get(w.app_name, default))
         return wallets
 
-    def _fetch_remote(self) -> t.Any | None:
-        """Fetch wallets JSON from the remote source, or ``None`` on failure."""
-        try:
-            raw = load_json(str(self._source), timeout=self._timeout)
-            self._save_fallback(raw)
-            return raw
-        except Exception:
-            return None
+    def _fetch_remote(self) -> t.Any:
+        """Fetch wallets JSON from the remote source and save it to the fallback file."""
+        raw = load_json(str(self._source), timeout=self._timeout)
+        self._save_fallback(raw)
+        return raw
 
     def _load_fallback(self) -> t.Any | None:
         """Load wallets from the local fallback file, or ``None``."""
